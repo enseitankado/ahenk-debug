@@ -8,53 +8,19 @@ bağlanma zincirini baştan sona inceler; arızayı **kimlik/klon çakışması*
 **ağ/bağlantı** ve **yerel yazılım** sınıflarına ayırır; ayrıca tahtanın hangi
 **okul/şehir/ilçe** adına kayıtlı olduğunu ETA API'sinden sorgular. Hiçbir harici
 Python paketine ihtiyaç duymaz (yalnızca standart kütüphane + sistemde hazır
-bulunan `psutil`/`ss`).
+bulunan `psutil`/`ss`). Raporu, çalıştığı anda operatöre **otomatik** ulaştırır
+(paste.rs + ntfy.sh; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)).
 
----
-
-## ⚡ Kurulumsuz çalıştırma (indirme gerekmez)
-
-Aracı **doğrudan depodan çekip** çalıştırın — dosya indirmeden, kurulum yapmadan,
-diske kalıcı bir şey yazmadan:
+İndirme/kurulum gerekmeden, doğrudan depodan boru hattıyla çalıştırın (root ister):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash
 ```
 
-Argüman vermek için `-s --` ekleyin:
-
-```bash
-# JSON çıktı
-curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --json
-
-# Ağ testlerini atla (hızlı)
-curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --no-net
-
-# Başka bir tahtayı MAC ile sorgula
-curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --mac AA:BB:CC:DD:EE:FF
-
-# Raporu doğrudan operatöre gönder (paste.rs + ntfy.sh; aşağıya bakın)
-curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --send
-```
-
-`wget` kullanan sistemlerde:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash
-```
-
-> `run.sh` önyükleyici; `ahenk_debug.py`'yi bir akış olarak çekip `python3`'e verir
-> (kalıcı dosya yazmaz). Araç **root** ister; bu yüzden `sudo bash` ile çağrılır.
-> Python betiğini doğrudan da boru hatlayabilirsiniz:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/ahenk_debug.py | sudo python3 - --json
-> ```
-
 ---
 
 ## İçindekiler
 
-0. [⚡ Kurulumsuz çalıştırma](#-kurulumsuz-çalıştırma-indirme-gerekmez)
 1. [Hızlı başlangıç](#hızlı-başlangıç)
 2. [Komut satırı seçenekleri](#komut-satırı-seçenekleri)
 3. [Çıkış kodları](#çıkış-kodları)
@@ -62,14 +28,14 @@ wget -qO- https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh
 5. [Rapor bölümleri](#rapor-bölümleri)
 6. [Canlı bağlantı doğrulaması](#canlı-bağlantı-doğrulaması-bayat-log--güncel-hata)
 7. [ETA Kayıt Sunucusu (eta-register API)](#eta-kayıt-sunucusu-eta-register-api)
-8. [Çıktıyı operatöre gönderme (`--send`)](#çıktıyı-operatöre-gönderme---send)
+8. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)
 9. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
-9. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
-10. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
-11. [JSON çıktısı](#json-çıktısı)
-12. [Gereksinimler ve sınırlar](#gereksinimler-ve-sınırlar)
-13. [Veri kaynakları](#veri-kaynakları)
-14. [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
+10. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
+11. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
+12. [JSON çıktısı](#json-çıktısı)
+13. [Gereksinimler ve sınırlar](#gereksinimler-ve-sınırlar)
+14. [Veri kaynakları](#veri-kaynakları)
+15. [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
 
 ---
 
@@ -109,7 +75,7 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `--out DOSYA` | Raporu (renksiz) belirtilen dosyaya da yazar |
 | `--db YOL` | `ahenk.db` yolunu elle verir (varsayılan: conf'taki `BASE/dbPath`) |
 | `--mac MAC` | ETA API'de **bu makinenin değil**, verilen MAC'i sorgular (uzaktaki bir tahtanın kaydını kontrol için) |
-| `--send` | Raporu **paste.rs**'e yükler ve özet+linki **ntfy.sh** konusuna iter — operatöre sunucusuz merkezi teslim ([aşağıya bakın](#çıktıyı-operatöre-gönderme---send)) |
+| `--no-send` | Otomatik gönderimi kapatır (varsayılan: rapor paste.rs+ntfy.sh ile operatöre **otomatik** gönderilir; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)) |
 | `--send-to KONU` | Gönderim için ntfy konusu/URL'si (varsayılan: gömülü konu; `AHENK_DEBUG_NTFY` ortam değişkeniyle de verilebilir) |
 
 > **Aktif Pulsar testi artık varsayılandır** (ayrı bir bayrak gerekmez); yalnızca
@@ -132,8 +98,8 @@ Bu sayede araç izleme/otomasyon içinde de kullanılabilir.
 
 ## Arka plan: Ahenk kayıt & bağlantı mimarisi
 
-Araç, bu makinedeki Ahenk 2.0.10 kaynağı (`/usr/share/ahenk`) ve canlı durum
-incelenerek tasarlandı. Tespit edilen işleyiş:
+Araç, Ahenk 2.0.10 kaynağı (`/usr/share/ahenk`) ve canlı sistem durumu temel
+alınarak tasarlandı. Tespit edilen işleyiş:
 
 ### Kimlik
 
@@ -331,21 +297,19 @@ olarak işaretler, çünkü Lider bu MAC için kaydı reddeder.
 
 ---
 
-## Çıktıyı operatöre gönderme (`--send`)
+## Çıktıyı operatöre gönderme
 
-Kullanıcının ekran çıktısını seçip kopyalayıp dosyaya kaydedip mail/WhatsApp ile
-göndermesi yerine, araç raporu **sunucusuz** olarak operatöre ulaştırabilir. Hiçbir
-sunucu kurulmaz; ikisi de bu okul ağından erişilebilir iki ücretsiz servis kullanılır:
+Araç, raporu **her çalışmada otomatik** olarak operatöre ulaştırır — kullanıcının
+ekran çıktısını seçip kopyalayıp dosyaya kaydedip mail/WhatsApp ile göndermesine
+gerek kalmaz. Hiçbir sunucu kurulmaz; iki ücretsiz servis kullanılır:
 
 - **[paste.rs](https://paste.rs)** — tam rapor metni yüklenir, kısa bir URL üretilir.
 - **[ntfy.sh](https://ntfy.sh)** — özet + rapor linki, operatörün bir **konusuna**
   (topic) anlık bildirim olarak itilir.
 
-```bash
-sudo ./ahenk_debug.py --send
-# veya kurulumsuz:
-curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --send
-```
+Yani normal çalıştırmada (`sudo ./ahenk_debug.py` veya kurulumsuz `curl … | sudo bash`)
+gönderim kendiliğinden yapılır. Otomatik göndermeyi **kapatmak** için `--no-send`
+kullanın (örn. yalnız yerel inceleme); `--no-net` verildiğinde de gönderim atlanır.
 
 Araç çalışınca:
 1. Raporu paste.rs'e yükler → `https://paste.rs/xxxx`.
@@ -360,16 +324,20 @@ Araç çalışınca:
    Tam rapor: https://paste.rs/xxxx
    ```
 
-### Operatör tarafı — kurulum (tek seferlik)
+### Operatör tarafı — alınan raporları okuma (tek seferlik kurulum)
 
-1. Telefona **ntfy** uygulamasını kur (Android/iOS) veya `https://ntfy.sh/<konu>` web
-   sayfasını aç.
-2. Şu konuya **abone ol**:
+1. Telefona **ntfy** uygulamasını kur (Android: Play Store / F-Droid, iOS: App Store)
+   **veya** bilgisayarda `https://ntfy.sh/ahenk-debug-ac4cb248e0fde19a1c70` adresini aç.
+2. Uygulamada **"+ Abone ol / Subscribe to topic"** deyip şu konuyu gir:
    ```
    ahenk-debug-ac4cb248e0fde19a1c70
    ```
-3. Bundan sonra `--send` ile çalışan her tahtanın özeti + rapor linki anlık olarak
-   düşer. FAIL varsa "urgent", WARN varsa "high" önceliğiyle gelir.
+   (Sunucu: `ntfy.sh` — varsayılan.)
+3. Artık çalışan her tahtanın özeti + rapor linki anlık bildirim olarak düşer.
+   FAIL varsa **urgent**, WARN varsa **high** önceliğiyle gelir.
+4. Bildirime dokun → özet açılır; içindeki **paste.rs linkine** dokun → tam raporu
+   tarayıcıda oku. (Web arayüzünde de aynı konu listelenir, mesaja tıklayıp linki
+   açabilirsin.)
 
 Konuyu değiştirmek için: `--send-to <konu>` veya `AHENK_DEBUG_NTFY=<konu>` ortam
 değişkeni (örn. kendi rastgele konunuzu üretip kullanın).
@@ -476,7 +444,7 @@ anahtarlar:
 | `active_probe` | `--probe` sonucu `{ok, auth_ok, stage, error}` |
 | `messenger_type`, `pulsar`/`xmpp` | Bağlantı yapılandırması |
 | `eta_api`, `school` | ETA kayıt sorgusu sonucu ve okul/il/ilçe |
-| `send` | `--send` sonucu `{paste_url, ntfy_topic, paste_ok, ntfy_ok}` |
+| `send` | otomatik gönderim sonucu `{paste_url, ntfy_topic, paste_ok, ntfy_ok}` |
 | `distro`, `kernel`, `arch` | Sistem |
 | `cpu`, `board`, `bios`, `memory`, `gpu`, `phase`, `touch` | Donanım & faz |
 | `findings` | `[{severity, title, detail}]` özet bulgular |

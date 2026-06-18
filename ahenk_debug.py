@@ -76,7 +76,7 @@ ETA_REGISTER_CONFIG = "/usr/share/pardus/eta-register/src/config.py"
 ETA_BACKEND_DEFAULT = "http://api-etap.eba.gov.tr:1000/api"
 ETA_HEADER_DEFAULT = {"etap-app-code": "eta_register!"}
 
-# --send: raporu sunucusuz olarak operatöre ulaştırma kanalları.
+# Raporu sunucusuz olarak operatöre ulaştırma kanalları (varsayılan: açık).
 # Rapor metni paste.rs'e yüklenir (kısa URL), özet+link ntfy.sh konusuna itilir.
 # Konu adı --send-to / AHENK_DEBUG_NTFY ile değiştirilebilir; abone olan operatör
 # tüm raporları telefondan/webden anında alır.
@@ -844,7 +844,7 @@ def query_eta_board(mac, backend, header, timeout=12, attempts=2):
 
 
 # ----------------------------------------------------------------------------
-# Raporu sunucusuz gönderme (--send): paste.rs + ntfy.sh
+# Raporu sunucusuz, otomatik gönderme: paste.rs + ntfy.sh
 # ----------------------------------------------------------------------------
 def upload_paste(text, timeout=15):
     """Rapor metnini paste.rs'e yükle, kısa URL döndür. (ok, url, hata)."""
@@ -1024,9 +1024,9 @@ def main():
     ap.add_argument("--db", default=None, help="ahenk.db yolu (vars: conf'tan)")
     ap.add_argument("--mac", metavar="MAC", default=None,
                     help="ETA API'de sorgulanacak MAC (vars: bu makinenin kimlik MAC'i)")
-    ap.add_argument("--send", action="store_true",
-                    help="raporu paste.rs'e yükle + özet/linki ntfy.sh konusuna it "
-                         "(operatöre sunucusuz merkezi teslim)")
+    ap.add_argument("--no-send", action="store_true",
+                    help="raporun operatöre otomatik gönderimini kapat "
+                         "(varsayılan: paste.rs + ntfy.sh ile otomatik gönderilir)")
     ap.add_argument("--send-to", metavar="KONU", default=None,
                     help="ntfy konusu/URL'si (vars: gömülü konu; AHENK_DEBUG_NTFY ile de "
                          "verilebilir)")
@@ -1792,16 +1792,15 @@ def main():
         except Exception as e:
             sys.stderr.write("Rapor yazılamadı: %s\n" % e)
 
-    # ---------------- Sunucusuz gönderim (--send) ----------------
-    if args.send and args.no_net:
-        sys.stderr.write("\n--send, --no-net ile kullanılamaz (gönderim ağ gerektirir).\n")
-    elif args.send:
+    # ---------------- Sunucusuz otomatik gönderim (vars. açık; --no-send kapatır) ----------------
+    if (not args.no_send) and args.no_net:
+        sys.stderr.write("\nOtomatik gönderim atlandı: --no-net (gönderim ağ gerektirir).\n")
+    elif not args.no_send:
         _USE_COLOR = False  # paste'e renk kaçış kodları gitmesin
         plain = R.render()
         bar = "\n" + "=" * 70
         print(bar)
-        print(bold("  RAPOR GÖNDERİLİYOR (--send)") if sys.stdout.isatty()
-              else "  RAPOR GÖNDERİLİYOR (--send)")
+        print("  RAPOR OPERATÖRE GÖNDERİLİYOR (--no-send ile kapatılabilir)")
         # 1) paste.rs'e yükle
         ok, url, err = upload_paste(plain)
         if ok:
