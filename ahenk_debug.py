@@ -846,6 +846,21 @@ def query_eta_board(mac, backend, header, timeout=12, attempts=2):
 # ----------------------------------------------------------------------------
 # Raporu sunucusuz, otomatik gönderme: paste.rs + ntfy.sh
 # ----------------------------------------------------------------------------
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def clean_for_paste(text):
+    """Paste/dosya için düz metin: ANSI renk kodlarını sök, sekmeleri boşluğa çevir.
+
+    Rapor ekranda renkli üretilir (ANSI kaçış kodları); paste servisleri bunları
+    render etmez, ham görünür. Burada renk kodlarını ve hizayı bozan sekmeleri
+    temizleyerek sabit-genişlikli fontta düzgün okunan bir metin elde ederiz.
+    """
+    text = ANSI_RE.sub("", text)
+    text = text.replace("\t", " ")
+    return text
+
+
 def upload_paste(text, timeout=15):
     """Rapor metnini paste.rs'e yükle, kısa URL döndür. (ok, url, hata)."""
     data = text.encode("utf-8", errors="replace")
@@ -1780,10 +1795,8 @@ def main():
     if args.out:
         try:
             with open(args.out, "w") as f:
-                # dosyaya renksiz yaz
-                global _USE_COLOR
-                _USE_COLOR = False
-                f.write(R.render() if not args.json else
+                # dosyaya renksiz (ANSI'siz) yaz
+                f.write(clean_for_paste(R.render()) if not args.json else
                         json.dumps(D, indent=2, ensure_ascii=False, default=str))
             sys.stderr.write("\nRapor yazıldı: %s\n" % args.out)
         except Exception as e:
@@ -1793,8 +1806,8 @@ def main():
     if (not args.no_send) and args.no_net:
         sys.stderr.write("\nOtomatik gönderim atlandı: --no-net (gönderim ağ gerektirir).\n")
     elif not args.no_send:
-        _USE_COLOR = False  # paste'e renk kaçış kodları gitmesin
-        plain = R.render()
+        # paste düz metin gösterir: renk kodlarını ve sekmeleri temizleyerek gönder
+        plain = clean_for_paste(R.render())
         # 1) Tam raporu paste.rs'e yükle
         ok, url, perr = upload_paste(plain)
         # 2) Özet + linki ntfy.sh konusuna it
