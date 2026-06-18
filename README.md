@@ -1,14 +1,9 @@
 # ahenk-debug
 
-**Lider tarafında çevrimdışı görünen veya uzak komut kabul etmeyen Ahenk
-istemcilerini yerinde teşhis eden tek dosyalık araç.**
-
-`ahenk_debug.py`, bir Pardus ETAP etkileşimli tahtasında Ahenk'in kayıt ve
-bağlanma zincirini baştan sona inceler; arızayı **kimlik/klon çakışması**,
-**ağ/bağlantı** ve **yerel yazılım** sınıflarına ayırır. Hiçbir harici Python
-paketine ihtiyaç duymaz (yalnızca standart kütüphane + sistemde hazır bulunan
-`psutil`/`ss`). Raporu, çalıştığı anda operatöre **otomatik** ulaştırır
-(paste.rs + ntfy.sh; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)).
+Lider tarafında çevrimdışı görünen veya uzak komut kabul etmeyen Ahenk
+istemcilerini yerinde teşhis eder, Pardus ETAP etkileşimli tahtasında Ahenk'in
+kayıt ve bağlanma zincirini baştan sona inceler; arızayı kimlik/klon çakışması,
+ağ/bağlantı ve yerel yazılım sınıflarına ayırır.
 
 İndirme/kurulum gerekmeden, doğrudan depodan boru hattıyla çalıştırın (root ister):
 
