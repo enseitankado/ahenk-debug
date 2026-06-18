@@ -78,7 +78,7 @@ ETA_HEADER_DEFAULT = {"etap-app-code": "eta_register!"}
 
 # Raporu sunucusuz olarak operatöre ulaştırma kanalları (varsayılan: açık).
 # Rapor metni paste.rs'e yüklenir (kısa URL), özet+link ntfy.sh konusuna itilir.
-# Konu adı --send-to / AHENK_DEBUG_NTFY ile değiştirilebilir; abone olan operatör
+# Konu adı AHENK_DEBUG_NTFY ortam değişkeniyle değiştirilebilir; abone olan operatör
 # tüm raporları telefondan/webden anında alır.
 PASTE_URL = "https://paste.rs"
 NTFY_BASE = "https://ntfy.sh"
@@ -1027,9 +1027,6 @@ def main():
     ap.add_argument("--no-send", action="store_true",
                     help="raporun operatöre otomatik gönderimini kapat "
                          "(varsayılan: paste.rs + ntfy.sh ile otomatik gönderilir)")
-    ap.add_argument("--send-to", metavar="KONU", default=None,
-                    help="ntfy konusu/URL'si (vars: gömülü konu; AHENK_DEBUG_NTFY ile de "
-                         "verilebilir)")
     args = ap.parse_args()
 
     # --- ZORUNLU ROOT ---
@@ -1798,18 +1795,10 @@ def main():
     elif not args.no_send:
         _USE_COLOR = False  # paste'e renk kaçış kodları gitmesin
         plain = R.render()
-        bar = "\n" + "=" * 70
-        print(bar)
-        print("  RAPOR OPERATÖRE GÖNDERİLİYOR (--no-send ile kapatılabilir)")
-        # 1) paste.rs'e yükle
-        ok, url, err = upload_paste(plain)
-        if ok:
-            print("  Rapor yüklendi: %s" % url)
-        else:
-            print("  paste.rs yükleme BAŞARISIZ: %s" % err)
-            url = None
-        # 2) ntfy.sh'e özet + link it
-        topic = args.send_to or os.environ.get("AHENK_DEBUG_NTFY") or NTFY_TOPIC_DEFAULT
+        # 1) Tam raporu paste.rs'e yükle
+        ok, url, perr = upload_paste(plain)
+        # 2) Özet + linki ntfy.sh konusuna it
+        topic = os.environ.get("AHENK_DEBUG_NTFY") or NTFY_TOPIC_DEFAULT
         summary, n_fail, n_warn = build_send_summary(D, R.findings)
         if url:
             summary += "\n\nTam rapor: %s" % url
@@ -1818,16 +1807,14 @@ def main():
         tags = ["rotating_light"] if n_fail else (["warning"] if n_warn else ["white_check_mark"])
         nok, nerr = notify_ntfy(topic, title, summary, click=url, priority=prio, tags=tags)
         disp_topic = topic if topic.startswith("http") else "%s/%s" % (NTFY_BASE, topic)
-        if nok:
-            print("  Bildirim gönderildi → %s" % disp_topic)
-            print("  (Operatör bu konuya ntfy ile abone olmalı.)")
-        else:
-            print("  ntfy bildirimi BAŞARISIZ: %s" % nerr)
-            if url:
-                print("  Yine de bu linki gönderebilirsiniz: %s" % url)
         D["send"] = {"paste_url": url, "ntfy_topic": disp_topic,
                      "paste_ok": ok, "ntfy_ok": nok}
-        print("=" * 70)
+        # Tek satır sonuç
+        if nok:
+            print("\nRapor operatöre gönderildi.")
+        else:
+            reason = nerr or perr or "bilinmeyen hata"
+            print("\nRapor operatöre gönderilemedi: %s" % reason)
 
     # çıkış kodu: FAIL varsa 2, WARN varsa 1, yoksa 0
     if any(f[0] == FAIL for f in R.findings):

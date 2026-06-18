@@ -5,10 +5,9 @@ istemcilerini yerinde teşhis eden tek dosyalık araç.**
 
 `ahenk_debug.py`, bir Pardus ETAP etkileşimli tahtasında Ahenk'in kayıt ve
 bağlanma zincirini baştan sona inceler; arızayı **kimlik/klon çakışması**,
-**ağ/bağlantı** ve **yerel yazılım** sınıflarına ayırır; ayrıca tahtanın hangi
-**okul/şehir/ilçe** adına kayıtlı olduğunu ETA API'sinden sorgular. Hiçbir harici
-Python paketine ihtiyaç duymaz (yalnızca standart kütüphane + sistemde hazır
-bulunan `psutil`/`ss`). Raporu, çalıştığı anda operatöre **otomatik** ulaştırır
+**ağ/bağlantı** ve **yerel yazılım** sınıflarına ayırır. Hiçbir harici Python
+paketine ihtiyaç duymaz (yalnızca standart kütüphane + sistemde hazır bulunan
+`psutil`/`ss`). Raporu, çalıştığı anda operatöre **otomatik** ulaştırır
 (paste.rs + ntfy.sh; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)).
 
 İndirme/kurulum gerekmeden, doğrudan depodan boru hattıyla çalıştırın (root ister):
@@ -27,15 +26,14 @@ curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.s
 4. [Arka plan: Ahenk kayıt & bağlantı mimarisi](#arka-plan-ahenk-kayıt--bağlantı-mimarisi)
 5. [Rapor bölümleri](#rapor-bölümleri)
 6. [Canlı bağlantı doğrulaması](#canlı-bağlantı-doğrulaması-bayat-log--güncel-hata)
-7. [ETA Kayıt Sunucusu (eta-register API)](#eta-kayıt-sunucusu-eta-register-api)
-8. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)
-9. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
-10. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
-11. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
-12. [JSON çıktısı](#json-çıktısı)
-13. [Gereksinimler ve sınırlar](#gereksinimler-ve-sınırlar)
-14. [Veri kaynakları](#veri-kaynakları)
-15. [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
+7. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)
+8. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
+9. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
+10. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
+11. [JSON çıktısı](#json-çıktısı)
+12. [Gereksinimler ve sınırlar](#gereksinimler-ve-sınırlar)
+13. [Veri kaynakları](#veri-kaynakları)
+14. [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
 
 ---
 
@@ -71,12 +69,11 @@ mesajı yollar, komut aboneliğine dokunmaz.
 |---|---|
 | _(yok)_ | Renkli, bölümlü tam rapor + sonda Özet/Teşhis |
 | `--json` | Tüm ham veriyi ve bulguları JSON olarak basar (betiklerle işlenebilir) |
-| `--no-net` | Ağ testlerini (DNS/TCP/TLS, ETA API) atlar; yalnız yerel kontroller. Canlı TCP soketi kontrolü yine de çalışır (yerel) |
+| `--no-net` | Ağ testlerini (DNS/TCP/TLS) atlar; yalnız yerel kontroller. Canlı TCP soketi kontrolü yine de çalışır (yerel) |
 | `--out DOSYA` | Raporu (renksiz) belirtilen dosyaya da yazar |
 | `--db YOL` | `ahenk.db` yolunu elle verir (varsayılan: conf'taki `BASE/dbPath`) |
-| `--mac MAC` | ETA API'de **bu makinenin değil**, verilen MAC'i sorgular (uzaktaki bir tahtanın kaydını kontrol için) |
+| `--mac MAC` | Kayıt durumu sorgusunu **bu makinenin değil**, verilen MAC için yapar (uzaktaki bir tahtayı kontrol için) |
 | `--no-send` | Otomatik gönderimi kapatır (varsayılan: rapor paste.rs+ntfy.sh ile operatöre **otomatik** gönderilir; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)) |
-| `--send-to KONU` | Gönderim için ntfy konusu/URL'si (varsayılan: gömülü konu; `AHENK_DEBUG_NTFY` ortam değişkeniyle de verilebilir) |
 
 > **Aktif Pulsar testi** her çalıştırmada otomatik yapılır; yalnızca `--no-net`
 > ile veya messenger Pulsar değilse atlanır.
@@ -105,7 +102,7 @@ yeterli. (Ahenk 2.0.10 için geçerlidir.)
 
 - Kayıt sırasında Ahenk, rastgele bir **`uuid4` JID** ve rastgele bir **`uuid4`
   parola** üretir; ikisini de hem `ahenk.db` (`registration` tablosu) hem
-  `ahenk.conf` `[CONNECTION]` bölümünde saklar. Tekillik, Lider/ETA tarafında
+  `ahenk.conf` `[CONNECTION]` bölümünde saklar. Tekillik, Lider tarafında
   tahtanın MAC'i üzerinden kurulur.
 - Lider tarafı tahtayı **kablolu ethernet MAC'i** ile tanır. Bu MAC, **ilk PCI
   veri yolu, sürücüye bağlı, kablosuz olmayan** arayüzden alınır. Uygun bir
@@ -120,18 +117,6 @@ yeterli. (Ahenk 2.0.10 için geçerlidir.)
   dinleyemez → Lider'de **çevrimdışı/yanıtsız** görünür.
 - Bağlantı kurulurken Ahenk önce `test-topic-lider`'e bir test mesajı yollayarak
   kendini sınar; araç da aynı testi yaparak bağlantıyı canlı olarak doğrular.
-
-### İki aşamalı kayıt zinciri
-
-```
-1) Tahta  ──(MAC + okul/il/ilçe)──►  ETA API (eta-register)
-2) Ahenk  ──(MAC/UUID)──►  Lider  ──(MAC kayıtlı mı?)──►  ETA API
-                                   └─ kayıtlı DEĞİLSE → kayıt İLERLEMEZ
-```
-
-Yani tahta önce `eta-register` aracıyla okul/il/ilçe seçilerek ETA API'sine
-kaydedilir. Ahenk Lider'e bağlandığında Lider arka planda ETA API'ye "bu MAC
-kayıtlı mı?" diye sorar. Kayıtlı değilse süreç durur ve tahta çevrimdışı kalır.
 
 ---
 
@@ -189,10 +174,9 @@ Sonra (root + ağ ile) derin testler: Pulsar/XMPP için **DNS → TCP → TLS el
 sıkışması → sertifika bitişi**; kayıt (register) ucu erişimi; logdaki son
 başarılı yayın ve son hata.
 
-### 5) ETA Kayıt Sunucusu — Okul / Şehir / İlçe
-Tahtanın MAC'inin **hangi şehir / ilçe / okul / birim** adına kayıtlı olduğunu
-ETA API'sinden çeker: `school_name`, `city_name`, `town_name`, `school_code`,
-`unit_name`, `board_id` ve API'nin tuttuğu faz bilgisi. (Aşağıdaki bölüme bakın.)
+### 5) Kayıt Durumu
+Tahtanın **kayıtlı olduğu okul / şehir / ilçe / birim** bilgisini ve kayıt
+durumunu gösterir.
 
 ### 6) Sistem / Dağıtım / Çekirdek
 Dağıtım ve alt sürüm (ör. *Pardus ETAP GNU/Linux 23*), `lsb_release`, çekirdek
@@ -201,7 +185,7 @@ ve zaman damgalarını bozar).
 
 ### 7) Donanım, Faz ve Dokunmatik
 İşlemci, anakart (üretici/model), BIOS, RAM, GPU(lar) + sürücü; **Faz 1/2/3
-tahmini** (yerel) ve ETA API faz bilgisi; **dokunmatik donanımı + sürücüsü**
+tahmini**; **dokunmatik donanımı + sürücüsü**
 (`/proc/bus/input/devices` + USB kimliği + bağlı çekirdek sürücüsü).
 
 ### Özet / Teşhis
@@ -239,58 +223,6 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
 | ConsumerBusy **bayat** + bağlantı **canlı** | **OK** — "Geçmiş ConsumerBusy güncel değil, bağlantı sağlıklı" |
 | ConsumerBusy **güncel** + sonrasında başarı yok | **FAIL** — "Aktif klon/çakışma sürüyor" |
 | ConsumerBusy var ama canlılık **doğrulanamadı** | **WARN** — ağ erişimiyle (--no-net'siz) tekrar çalıştırın |
-
----
-
-## ETA Kayıt Sunucusu (eta-register API)
-
-Araç, tahtanın okul kaydını `eta-register`'ın kullandığı ETA API'sinden **salt-okur**
-sorgular — cihazın her açılışta yaptığı sorgunun aynısını yapar.
-
-**Asıl sorgu:**
-
-```
-GET {BACKEND_URL}/board/check?mac=<mac>
-Header: etap-app-code: eta_register!
-```
-
-`BACKEND_URL` ve gizli header, kuruluysa `eta-register`'ın kendi
-`config.py`'sinden okunur (üretim varsayılanı:
-`http://api-etap.eba.gov.tr:1000/api`). **Kayıtlı** bir MAC için örnek yanıt:
-
-```json
-{
-  "msg": "Success",
-  "registered": true,
-  "registered_ip": true,
-  "data": {
-    "school_code": 123456,
-    "school_name": "Örnek Mesleki ve Teknik Anadolu Lisesi",
-    "city_id": 1,   "city_name": "ÖRNEK İL",
-    "town_id": 10,  "town_name": "ÖRNEK İLÇE",
-    "board_id": 9999,
-    "unit_name": "Sınıf-1",
-    "phase": "4. Phase"
-  }
-}
-```
-
-> Yukarıdaki değerler örnektir; gerçek alanlar tahtanın kayıtlı olduğu okula göre döner.
-
-**Kayıtsız** MAC için: `{"registered": false, "data": null}` → araç bunu **FAIL**
-olarak işaretler, çünkü Lider bu MAC için kaydı reddeder.
-
-ETA API'nin ilgili diğer uçları (referans):
-
-| Uç | İşlev |
-|---|---|
-| `GET /board/check?mac=<mac>` | MAC kayıtlı mı + okul/il/ilçe bilgisi |
-| `GET /city` | İl listesi |
-| `GET /town/id/{city_id}` | İlçe listesi |
-| `GET /school/no-limit/{city_id}/{town_id}` | Okul listesi |
-| `GET /school/code/{code}` | Okul kodu doğrulama |
-| `POST /board` | Tahta kaydı (city_id, town_id, school_code, mac_id, donanım, unit_name) |
-| `POST /board/update` | Tahta kaydı güncelleme |
 
 ---
 
@@ -335,13 +267,13 @@ Araç çalışınca:
 4. Bildirime dokunun → özet açılır; içindeki **paste.rs linkine** dokunun → tam
    raporu tarayıcıda okuyun. (Web arayüzünde de aynı konu listelenir.)
 
-Konuyu değiştirmek için: `--send-to <konu>` veya `AHENK_DEBUG_NTFY=<konu>` ortam
-değişkeni.
+Konuyu değiştirmek için: çalıştırmadan önce `AHENK_DEBUG_NTFY=<konu>` ortam
+değişkenini ayarlayın (ya da koddaki gömülü konuyu değiştirin).
 
 > **Gizlilik.** Rapor; okul adı, MAC, IP gibi tanımlayıcı bilgi içerir. `ahenk-debug`
 > herkese açık ve kolay tahmin edilen bir konudur; bilen herkes abone olup gelen
-> raporları görebilir ya da konuya çöp mesaj gönderebilir. Hassas kullanımda kendi
-> rastgele konunuzu (`--send-to <rastgele-konu>`) belirleyin. `paste.rs` linkleri
+> raporları görebilir ya da konuya çöp mesaj gönderebilir. Hassas kullanımda
+> `AHENK_DEBUG_NTFY` ile kendi rastgele konunuzu belirleyin. `paste.rs` linkleri
 > tahmin edilemez ama içerik üçüncü tarafta barınır.
 
 ---
@@ -349,8 +281,7 @@ değişkeni.
 ## Faz (Faz 1/2/3) tespiti
 
 ETAP tahtaları donanım kuşağına göre fazlara ayrılır. Araç, işlemci markası ve
-anakart üreticisinden **yerel** bir tahmin üretir ve mümkünse ETA API'nin faz
-bilgisiyle yan yana gösterir:
+anakart üreticisinden bir tahmin üretir:
 
 | İşlemci | Faz |
 |---|---|
@@ -379,7 +310,6 @@ listelenir.
 | Broker portuna TCP açılamıyor | 4 | **Güvenlik duvarı / yanlış adres / sunucu kapalı** → subscribe olamaz |
 | DNS sunucusu yok / ad çözülemiyor | 4 | **DNS** sorunu — broker adı IP'ye çevrilemez |
 | DNS/TCP/TLS başarısız, ağ geçidi yok | 4 | **Ağ/bağlantı** sorunu |
-| ETA API'de `registered:false` | 5 | Tahta okul/il/ilçe ile **hiç kaydedilmemiş** → Lider reddeder |
 | `registered=1` ama `dn` boş | 2 | **registered_without_ldap** — mesajlaşma çalışır, LDAP politikaları uygulanmaz (Lider tarafı) |
 | `registered=0` ve `dn` boş | 2 | Kayıt **hiç tamamlanmamış** |
 | Servis pasif / crash-loop, conf↔db uyuşmazlığı | 1–2 | **Yerel yazılım** sorunu |
@@ -404,17 +334,12 @@ sudo systemctl start ahenk.service                       # yeni UUID ile yeniden
 Ardından aracı tekrar çalıştırıp `ConsumerBusy`'nin durduğunu ve canlı bağlantının
 kurulduğunu doğrulayın.
 
-### B) Tahta ETA API'de kayıtlı değil
-`eta-register` aracını (etapadmin kullanıcısıyla) açıp doğru **il/ilçe/okul** ile
-tahtayı kaydedin. Kayıttan sonra `--mac` ile veya doğrudan araçla `registered:true`
-olduğunu doğrulayın.
-
-### C) Ağ/bağlantı sorunu
+### B) Ağ/bağlantı sorunu
 Bölüm 4'teki DNS/TCP/TLS satırlarına bakın. Güvenlik duvarı, yanlış broker
 adresi, süresi dolmuş/eksik TLS sertifikası veya kopuk ağ geçidi olabilir.
 Aktif Pulsar testi (otomatik) kimlik doğrulamanın da çalışıp çalışmadığını gösterir.
 
-### D) Kimlik MAC'i çözülemiyor
+### C) Kimlik MAC'i çözülemiyor
 Tahtada **kablolu ethernet** sürücüsü yüklü ve arayüz mevcut olmalı. Yalnız
 USB/WiFi adaptör varsa `etainfo.network.get()` `None` döner ve kayıt çöker.
 Sürücüyü (ör. `r8169`) ve kablo bağlantısını kontrol edin.
@@ -438,7 +363,7 @@ anahtarlar:
 | `logs` | Her olay için `{count, last, last_dt}` |
 | `active_probe` | aktif Pulsar testi sonucu `{ok, auth_ok, stage, error}` |
 | `messenger_type`, `pulsar`/`xmpp` | Bağlantı yapılandırması |
-| `eta_api`, `school` | ETA kayıt sorgusu sonucu ve okul/il/ilçe |
+| `school` | tahtanın kayıtlı olduğu okul/il/ilçe |
 | `send` | otomatik gönderim sonucu `{paste_url, ntfy_topic, paste_ok, ntfy_ok}` |
 | `distro`, `kernel`, `arch` | Sistem |
 | `cpu`, `board`, `bios`, `memory`, `gpu`, `phase`, `touch` | Donanım & faz |
@@ -471,7 +396,6 @@ anahtarlar:
 | `/proc/cpuinfo`, `/proc/meminfo`, `/proc/bus/input/devices` | CPU, RAM, dokunmatik |
 | `systemctl`, `ss`, `lsb_release`, `timedatectl`, `openssl`, `ip` | Servis/ağ/sistem |
 | `etainfo.network` (içe aktarılır) | Ahenk'in kullandığı kimlik MAC'ini birebir üretir |
-| ETA API `…/board/check?mac=` | Okul/il/ilçe kayıt durumu |
 
 ---
 
@@ -482,8 +406,6 @@ anahtarlar:
 - Araç, Ahenk yapılandırmasını ve servisini **değiştirmez** (salt-okur).
 - Aktif Pulsar testi, broker'a yalnızca **tek bir test mesajı** yollar (Ahenk'in
   açılışta zaten yaptığı işlem) ve komut aboneliğine dokunmaz.
-- ETA API sorgusu, cihazın kendi MAC'i ile yapılan, cihazın her açılışta yaptığı
-  salt-okur bir sorgudur.
 - Otomatik gönderim açıkken rapor; `paste.rs` ve `ntfy.sh` üçüncü taraf
   servislerine gider (bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)).
   İstemiyorsanız `--no-send` ile kapatın.
