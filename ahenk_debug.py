@@ -948,8 +948,11 @@ def main():
             red("HATA: ") + "Bu araç root (sudo) yetkisiyle çalıştırılmalıdır.\n"
             "  ahenk.conf/messaging.conf (0600), parolalar, aktif bağlantı testi ve\n"
             "  süreç soketleri yalnızca root tarafından okunabilir.\n\n"
-            "  Şu komutla yeniden çalıştırın:\n"
-            "    sudo %s\n" % " ".join(sys.argv))
+            "  Kurulumsuz (depodan) çalıştırma:\n"
+            "    curl -fsSL https://raw.githubusercontent.com/enseitankado/"
+            "ahenk-debug/main/run.sh | sudo bash\n"
+            "  Yerel dosyadan:\n"
+            "    sudo python3 ahenk_debug.py\n")
         return 3
 
     R = Report()

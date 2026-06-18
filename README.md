@@ -12,8 +12,46 @@ bulunan `psutil`/`ss`).
 
 ---
 
+## ⚡ Kurulumsuz çalıştırma (indirme gerekmez)
+
+Aracı **doğrudan depodan çekip** çalıştırın — dosya indirmeden, kurulum yapmadan,
+diske kalıcı bir şey yazmadan:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash
+```
+
+Argüman vermek için `-s --` ekleyin:
+
+```bash
+# JSON çıktı
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --json
+
+# Ağ testlerini atla (hızlı)
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --no-net
+
+# Başka bir tahtayı MAC ile sorgula
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --mac AA:BB:CC:DD:EE:FF
+```
+
+`wget` kullanan sistemlerde:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash
+```
+
+> `run.sh` önyükleyici; `ahenk_debug.py`'yi bir akış olarak çekip `python3`'e verir
+> (kalıcı dosya yazmaz). Araç **root** ister; bu yüzden `sudo bash` ile çağrılır.
+> Python betiğini doğrudan da boru hatlayabilirsiniz:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/ahenk_debug.py | sudo python3 - --json
+> ```
+
+---
+
 ## İçindekiler
 
+0. [⚡ Kurulumsuz çalıştırma](#-kurulumsuz-çalıştırma-indirme-gerekmez)
 1. [Hızlı başlangıç](#hızlı-başlangıç)
 2. [Komut satırı seçenekleri](#komut-satırı-seçenekleri)
 3. [Çıkış kodları](#çıkış-kodları)
