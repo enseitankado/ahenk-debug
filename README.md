@@ -32,6 +32,9 @@ curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.s
 
 # Başka bir tahtayı MAC ile sorgula
 curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --mac AA:BB:CC:DD:EE:FF
+
+# Raporu doğrudan operatöre gönder (paste.rs + ntfy.sh; aşağıya bakın)
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --send
 ```
 
 `wget` kullanan sistemlerde:
@@ -59,7 +62,8 @@ wget -qO- https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh
 5. [Rapor bölümleri](#rapor-bölümleri)
 6. [Canlı bağlantı doğrulaması](#canlı-bağlantı-doğrulaması-bayat-log--güncel-hata)
 7. [ETA Kayıt Sunucusu (eta-register API)](#eta-kayıt-sunucusu-eta-register-api)
-8. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
+8. [Çıktıyı operatöre gönderme (`--send`)](#çıktıyı-operatöre-gönderme---send)
+9. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
 9. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
 10. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
 11. [JSON çıktısı](#json-çıktısı)
@@ -105,6 +109,8 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `--out DOSYA` | Raporu (renksiz) belirtilen dosyaya da yazar |
 | `--db YOL` | `ahenk.db` yolunu elle verir (varsayılan: conf'taki `BASE/dbPath`) |
 | `--mac MAC` | ETA API'de **bu makinenin değil**, verilen MAC'i sorgular (uzaktaki bir tahtanın kaydını kontrol için) |
+| `--send` | Raporu **paste.rs**'e yükler ve özet+linki **ntfy.sh** konusuna iter — operatöre sunucusuz merkezi teslim ([aşağıya bakın](#çıktıyı-operatöre-gönderme---send)) |
+| `--send-to KONU` | Gönderim için ntfy konusu/URL'si (varsayılan: gömülü konu; `AHENK_DEBUG_NTFY` ortam değişkeniyle de verilebilir) |
 
 > **Aktif Pulsar testi artık varsayılandır** (ayrı bir bayrak gerekmez); yalnızca
 > `--no-net` ile veya messenger Pulsar değilse atlanır.
@@ -325,6 +331,58 @@ olarak işaretler, çünkü Lider bu MAC için kaydı reddeder.
 
 ---
 
+## Çıktıyı operatöre gönderme (`--send`)
+
+Kullanıcının ekran çıktısını seçip kopyalayıp dosyaya kaydedip mail/WhatsApp ile
+göndermesi yerine, araç raporu **sunucusuz** olarak operatöre ulaştırabilir. Hiçbir
+sunucu kurulmaz; ikisi de bu okul ağından erişilebilir iki ücretsiz servis kullanılır:
+
+- **[paste.rs](https://paste.rs)** — tam rapor metni yüklenir, kısa bir URL üretilir.
+- **[ntfy.sh](https://ntfy.sh)** — özet + rapor linki, operatörün bir **konusuna**
+  (topic) anlık bildirim olarak itilir.
+
+```bash
+sudo ./ahenk_debug.py --send
+# veya kurulumsuz:
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --send
+```
+
+Araç çalışınca:
+1. Raporu paste.rs'e yükler → `https://paste.rs/xxxx`.
+2. ntfy konusuna şu içerikte bildirim iter (tıklanabilir link, önem önceliğiyle):
+   ```
+   Başlık: ahenk: <hostname>
+   host: <hostname> | MAC: <kimlik MAC>
+   okul: <il> / <ilçe> / <okul>
+   servis: active | canlı TCP: 3 | kayıt: ...
+   BULGU: 1 FAIL, 2 WARN
+   · [FAIL] ...
+   Tam rapor: https://paste.rs/xxxx
+   ```
+
+### Operatör tarafı — kurulum (tek seferlik)
+
+1. Telefona **ntfy** uygulamasını kur (Android/iOS) veya `https://ntfy.sh/<konu>` web
+   sayfasını aç.
+2. Şu konuya **abone ol**:
+   ```
+   ahenk-debug-ac4cb248e0fde19a1c70
+   ```
+3. Bundan sonra `--send` ile çalışan her tahtanın özeti + rapor linki anlık olarak
+   düşer. FAIL varsa "urgent", WARN varsa "high" önceliğiyle gelir.
+
+Konuyu değiştirmek için: `--send-to <konu>` veya `AHENK_DEBUG_NTFY=<konu>` ortam
+değişkeni (örn. kendi rastgele konunuzu üretip kullanın).
+
+> **Gizlilik uyarısı.** Rapor; okul adı, MAC, IP gibi tanımlayıcı bilgi içerir. Bu
+> depo herkese açıktır; dolayısıyla gömülü ntfy konusu da herkese görünür. Konuyu
+> bilen biri **abone olup gelen raporları okuyabilir** veya konuya spam atabilir.
+> Hassas ortamlarda kendi rastgele konunuzu (`--send-to`) kullanın, konuyu depoya
+> yazmayın ve gerekirse periyodik değiştirin; ya da depoyu özelleştirin (private).
+> `paste.rs` linkleri tahmin edilemezdir ama içerik üçüncü tarafta barınır.
+
+---
+
 ## Faz (Faz 1/2/3) tespiti
 
 ETAP tahtaları donanım kuşağına göre fazlara ayrılır. Araç, işlemci markası ve
@@ -418,6 +476,7 @@ anahtarlar:
 | `active_probe` | `--probe` sonucu `{ok, auth_ok, stage, error}` |
 | `messenger_type`, `pulsar`/`xmpp` | Bağlantı yapılandırması |
 | `eta_api`, `school` | ETA kayıt sorgusu sonucu ve okul/il/ilçe |
+| `send` | `--send` sonucu `{paste_url, ntfy_topic, paste_ok, ntfy_ok}` |
 | `distro`, `kernel`, `arch` | Sistem |
 | `cpu`, `board`, `bios`, `memory`, `gpu`, `phase`, `touch` | Donanım & faz |
 | `findings` | `[{severity, title, detail}]` özet bulgular |

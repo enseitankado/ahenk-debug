@@ -76,6 +76,14 @@ ETA_REGISTER_CONFIG = "/usr/share/pardus/eta-register/src/config.py"
 ETA_BACKEND_DEFAULT = "http://api-etap.eba.gov.tr:1000/api"
 ETA_HEADER_DEFAULT = {"etap-app-code": "eta_register!"}
 
+# --send: raporu sunucusuz olarak operatöre ulaştırma kanalları.
+# Rapor metni paste.rs'e yüklenir (kısa URL), özet+link ntfy.sh konusuna itilir.
+# Konu adı --send-to / AHENK_DEBUG_NTFY ile değiştirilebilir; abone olan operatör
+# tüm raporları telefondan/webden anında alır.
+PASTE_URL = "https://paste.rs"
+NTFY_BASE = "https://ntfy.sh"
+NTFY_TOPIC_DEFAULT = "ahenk-debug-ac4cb248e0fde19a1c70"
+
 # FAZ tablosu: işlemci markasındaki alt dize -> faz etiketi.
 # (Ahenk system.py içindeki devre-dışı bırakılmış get_eta_phase mantığından türetildi.)
 PHASE_TABLE = [
@@ -836,6 +844,84 @@ def query_eta_board(mac, backend, header, timeout=12, attempts=2):
 
 
 # ----------------------------------------------------------------------------
+# Raporu sunucusuz gönderme (--send): paste.rs + ntfy.sh
+# ----------------------------------------------------------------------------
+def upload_paste(text, timeout=15):
+    """Rapor metnini paste.rs'e yükle, kısa URL döndür. (ok, url, hata)."""
+    data = text.encode("utf-8", errors="replace")
+    req = urllib.request.Request(PASTE_URL, data=data, method="POST")
+    req.add_header("Content-Type", "text/plain; charset=utf-8")
+    req.add_header("User-Agent", "ahenk-debug")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            url = r.read().decode("utf-8", errors="replace").strip()
+        return (url.startswith("http"), url, None)
+    except Exception as e:
+        return (False, None, str(e))
+
+
+def notify_ntfy(topic, title, message, click=None, priority=None, tags=None,
+                timeout=12):
+    """ntfy.sh konusuna bildirim it. (ok, hata)."""
+    base = NTFY_BASE.rstrip("/")
+    # Konu tam URL olarak da verilebilir
+    url = topic if topic.startswith("http") else "%s/%s" % (base, topic)
+    data = message.encode("utf-8", errors="replace")
+    req = urllib.request.Request(url, data=data, method="POST")
+
+    def _ascii(s):
+        # ntfy başlık/etiket başlıkları ASCII olmalı; Türkçe karakterleri sadeleştir
+        return s.encode("ascii", "replace").decode("ascii")
+    req.add_header("Title", _ascii(title))
+    if click:
+        req.add_header("Click", click)
+    if priority:
+        req.add_header("Priority", str(priority))
+    if tags:
+        req.add_header("Tags", _ascii(",".join(tags)))
+    req.add_header("User-Agent", "ahenk-debug")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            r.read()
+        return (True, None)
+    except Exception as e:
+        return (False, str(e))
+
+
+def build_send_summary(D, findings):
+    """ntfy mesajı için kısa özet metni (D ve bulgulardan)."""
+    n_fail = sum(1 for s, _, _ in findings if s == "FAIL")
+    n_warn = sum(1 for s, _, _ in findings if s == "WARN")
+    lines = []
+    host = D.get("hostname") or platform.node()
+    lines.append("host: %s" % host)
+    if D.get("identity_mac"):
+        lines.append("MAC: %s" % D["identity_mac"])
+    sch = D.get("school") or {}
+    if sch.get("school"):
+        lines.append("okul: %s / %s / %s" %
+                     (sch.get("city"), sch.get("town"), sch.get("school")))
+    lc = D.get("live_connection") or {}
+    lines.append("servis: %s | canlı TCP: %s | kayıt: %s" % (
+        D.get("service_active"), lc.get("count"),
+        ("LDAP'lı" if D.get("ldap_registered") else "registered_without_ldap"
+         if D.get("registration_kind") else "?")))
+    lines.append("BULGU: %d FAIL, %d WARN" % (n_fail, n_warn))
+    # En önemli birkaç bulguyu ekle
+    order = {"FAIL": 0, "WARN": 1}
+    for sev, title, _ in sorted(findings, key=lambda f: order.get(f[0], 9))[:4]:
+        if sev in ("FAIL", "WARN"):
+            lines.append("· [%s] %s" % (sev, title))
+    return "\n".join(lines), n_fail, n_warn
+
+
+# ----------------------------------------------------------------------------
 # Donanım / faz / dokunmatik
 # ----------------------------------------------------------------------------
 def cpu_brand():
@@ -938,6 +1024,12 @@ def main():
     ap.add_argument("--db", default=None, help="ahenk.db yolu (vars: conf'tan)")
     ap.add_argument("--mac", metavar="MAC", default=None,
                     help="ETA API'de sorgulanacak MAC (vars: bu makinenin kimlik MAC'i)")
+    ap.add_argument("--send", action="store_true",
+                    help="raporu paste.rs'e yükle + özet/linki ntfy.sh konusuna it "
+                         "(operatöre sunucusuz merkezi teslim)")
+    ap.add_argument("--send-to", metavar="KONU", default=None,
+                    help="ntfy konusu/URL'si (vars: gömülü konu; AHENK_DEBUG_NTFY ile de "
+                         "verilebilir)")
     args = ap.parse_args()
 
     # --- ZORUNLU ROOT ---
@@ -1600,6 +1692,7 @@ def main():
     m = re.search(r'PRETTY_NAME="?([^"\n]+)', osrel)
     distro = m.group(1) if m else platform.platform()
     D["distro"] = distro
+    D["hostname"] = platform.node()
     D["kernel"] = platform.release()
     D["arch"] = platform.machine()
     R.line("Dağıtım", distro, INFO)
@@ -1698,6 +1791,44 @@ def main():
             sys.stderr.write("\nRapor yazıldı: %s\n" % args.out)
         except Exception as e:
             sys.stderr.write("Rapor yazılamadı: %s\n" % e)
+
+    # ---------------- Sunucusuz gönderim (--send) ----------------
+    if args.send and args.no_net:
+        sys.stderr.write("\n--send, --no-net ile kullanılamaz (gönderim ağ gerektirir).\n")
+    elif args.send:
+        _USE_COLOR = False  # paste'e renk kaçış kodları gitmesin
+        plain = R.render()
+        bar = "\n" + "=" * 70
+        print(bar)
+        print(bold("  RAPOR GÖNDERİLİYOR (--send)") if sys.stdout.isatty()
+              else "  RAPOR GÖNDERİLİYOR (--send)")
+        # 1) paste.rs'e yükle
+        ok, url, err = upload_paste(plain)
+        if ok:
+            print("  Rapor yüklendi: %s" % url)
+        else:
+            print("  paste.rs yükleme BAŞARISIZ: %s" % err)
+            url = None
+        # 2) ntfy.sh'e özet + link it
+        topic = args.send_to or os.environ.get("AHENK_DEBUG_NTFY") or NTFY_TOPIC_DEFAULT
+        summary, n_fail, n_warn = build_send_summary(D, R.findings)
+        if url:
+            summary += "\n\nTam rapor: %s" % url
+        title = "ahenk: %s" % (D.get("hostname") or platform.node())
+        prio = "urgent" if n_fail else ("high" if n_warn else "default")
+        tags = ["rotating_light"] if n_fail else (["warning"] if n_warn else ["white_check_mark"])
+        nok, nerr = notify_ntfy(topic, title, summary, click=url, priority=prio, tags=tags)
+        disp_topic = topic if topic.startswith("http") else "%s/%s" % (NTFY_BASE, topic)
+        if nok:
+            print("  Bildirim gönderildi → %s" % disp_topic)
+            print("  (Operatör bu konuya ntfy ile abone olmalı.)")
+        else:
+            print("  ntfy bildirimi BAŞARISIZ: %s" % nerr)
+            if url:
+                print("  Yine de bu linki gönderebilirsiniz: %s" % url)
+        D["send"] = {"paste_url": url, "ntfy_topic": disp_topic,
+                     "paste_ok": ok, "ntfy_ok": nok}
+        print("=" * 70)
 
     # çıkış kodu: FAIL varsa 2, WARN varsa 1, yoksa 0
     if any(f[0] == FAIL for f in R.findings):
