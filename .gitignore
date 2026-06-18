@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Araç çıktıları
+rapor.txt
+*.report.txt
+*.json.out
