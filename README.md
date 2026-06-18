@@ -42,11 +42,11 @@ curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.s
 ## Hızlı başlangıç
 
 ```bash
-# Tam, insan-okur rapor  (ROOT ZORUNLU)
+# Tam, okunabilir rapor  (ROOT ZORUNLU)
 sudo ./ahenk_debug.py
 
 # Başka seçenekler
-sudo ./ahenk_debug.py --json                    # makine-okur JSON çıktı
+sudo ./ahenk_debug.py --json                    # JSON çıktı (betikler için)
 sudo ./ahenk_debug.py --no-net                  # ağ/API/aktif testleri atla (hızlı)
 sudo ./ahenk_debug.py --out rapor.txt           # raporu dosyaya da yaz
 sudo ./ahenk_debug.py --mac AA:BB:CC:DD:EE:FF    # başka bir tahtayı MAC ile sorgula
@@ -78,8 +78,8 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `--no-send` | Otomatik gönderimi kapatır (varsayılan: rapor paste.rs+ntfy.sh ile operatöre **otomatik** gönderilir; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)) |
 | `--send-to KONU` | Gönderim için ntfy konusu/URL'si (varsayılan: gömülü konu; `AHENK_DEBUG_NTFY` ortam değişkeniyle de verilebilir) |
 
-> **Aktif Pulsar testi artık varsayılandır** (ayrı bir bayrak gerekmez); yalnızca
-> `--no-net` ile veya messenger Pulsar değilse atlanır.
+> **Aktif Pulsar testi** her çalıştırmada otomatik yapılır; yalnızca `--no-net`
+> ile veya messenger Pulsar değilse atlanır.
 
 ---
 
@@ -98,20 +98,18 @@ Bu sayede araç izleme/otomasyon içinde de kullanılabilir.
 
 ## Arka plan: Ahenk kayıt & bağlantı mimarisi
 
-Araç, Ahenk 2.0.10 kaynağı (`/usr/share/ahenk`) ve canlı sistem durumu temel
-alınarak tasarlandı. Tespit edilen işleyiş:
+Aracın neye baktığını anlamak için Ahenk'in kayıt ve bağlanma akışını bilmek
+yeterli. (Ahenk 2.0.10 için geçerlidir.)
 
 ### Kimlik
 
 - Kayıt sırasında Ahenk, rastgele bir **`uuid4` JID** ve rastgele bir **`uuid4`
   parola** üretir; ikisini de hem `ahenk.db` (`registration` tablosu) hem
-  `ahenk.conf` `[CONNECTION]` bölümünde saklar.
-  *(Kod yorumu UUID'nin MAC'e dayandığını söylese de `generate_uuid` aslında
-  rastgele üretir; tekillik MAC üzerinden Lider/ETA tarafında kurulur.)*
-- Lider tarafı tahtayı **kablolu ethernet MAC'i** ile tanır. Bu MAC,
-  `etainfo.network.get()` tarafından **ilk PCI veri yolu, sürücüye bağlı,
-  kablosuz olmayan** arayüzden alınır. Uygun arayüz yoksa fonksiyon `None` döner
-  ve **kayıt aşamasında çöker**.
+  `ahenk.conf` `[CONNECTION]` bölümünde saklar. Tekillik, Lider/ETA tarafında
+  tahtanın MAC'i üzerinden kurulur.
+- Lider tarafı tahtayı **kablolu ethernet MAC'i** ile tanır. Bu MAC, **ilk PCI
+  veri yolu, sürücüye bağlı, kablosuz olmayan** arayüzden alınır. Uygun bir
+  kablolu arayüz yoksa kayıt **tamamlanamaz**.
 
 ### Mesajlaşma (Pulsar)
 
@@ -120,8 +118,8 @@ alınarak tasarlandı. Tespit edilen işleyiş:
 - **Exclusive** olması kritiktir: aynı UUID iki makinede kullanılırsa (klon imaj)
   ikinci istemci broker'dan **`ConsumerBusy`** hatası alır, komut topic'ini
   dinleyemez → Lider'de **çevrimdışı/yanıtsız** görünür.
-- Bağlantı kurulurken Ahenk önce `test-topic-lider`'e bir producer açıp test
-  mesajı yollayarak kendini sınar (araç `--probe` ile bunu taklit eder).
+- Bağlantı kurulurken Ahenk önce `test-topic-lider`'e bir test mesajı yollayarak
+  kendini sınar; araç da aynı testi yaparak bağlantıyı canlı olarak doğrular.
 
 ### İki aşamalı kayıt zinciri
 
@@ -228,11 +226,11 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
    sürecinin broker'a (Pulsar `6650/6651`, XMPP `5222/5223`) o anki
    **ESTABLISHED** bağlantıları sayılır. Varsa, makine komut topic'ine bağlı
    demektir. Bu kontrol yereldir, `--no-net` ile bile çalışır.
-4. **Aktif Pulsar testi (varsayılan)** — Ahenk'in kendi `connect()` öz-testini
-   taklit eder: **gerçek uid/parola** ile broker'a bağlanıp `test-topic-lider`'e
-   bir test mesajı yollar. Böylece DNS + TCP + TLS + **kimlik doğrulamanın** o an
-   çalıştığı kanıtlanır. Exclusive komut aboneliğine (`ahenk-<uid>`) **dokunmaz**,
-   dolayısıyla çalışan Ahenk'i bozmaz. (`--no-net` ile atlanır.)
+4. **Aktif Pulsar testi** — Ahenk'in açılışta yaptığı bağlantı testini birebir
+   yapar: **gerçek uid/parola** ile broker'a bağlanıp `test-topic-lider`'e bir
+   test mesajı yollar. Böylece DNS + TCP + TLS + **kimlik doğrulamanın** o an
+   çalıştığı kanıtlanır. Komut aboneliğine (`ahenk-<uid>`) **dokunmaz**,
+   dolayısıyla çalışan Ahenk'i etkilemez. (`--no-net` ile atlanır.)
 
 **Karar tablosu:**
 
@@ -240,15 +238,14 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
 |---|---|
 | ConsumerBusy **bayat** + bağlantı **canlı** | **OK** — "Geçmiş ConsumerBusy güncel değil, bağlantı sağlıklı" |
 | ConsumerBusy **güncel** + sonrasında başarı yok | **FAIL** — "Aktif klon/çakışma sürüyor" |
-| ConsumerBusy var ama canlılık **doğrulanamadı** | **WARN** — root + ağ ile tekrar çalıştırın / `--probe` |
+| ConsumerBusy var ama canlılık **doğrulanamadı** | **WARN** — ağ erişimiyle (--no-net'siz) tekrar çalıştırın |
 
 ---
 
 ## ETA Kayıt Sunucusu (eta-register API)
 
-Sistemdeki `eta-register` aracı (`/usr/share/pardus/eta-register/src/`) incelenerek
-API yapısı çıkarıldı. Araç bu API'yi salt-okur sorgular (cihazın her açılışta
-yaptığı sorgunun aynısı).
+Araç, tahtanın okul kaydını `eta-register`'ın kullandığı ETA API'sinden **salt-okur**
+sorgular — cihazın her açılışta yaptığı sorgunun aynısını yapar.
 
 **Asıl sorgu:**
 
@@ -283,7 +280,7 @@ Header: etap-app-code: eta_register!
 **Kayıtsız** MAC için: `{"registered": false, "data": null}` → araç bunu **FAIL**
 olarak işaretler, çünkü Lider bu MAC için kaydı reddeder.
 
-İlgili diğer API uçları (eta-register kaynağından, referans amaçlı):
+ETA API'nin ilgili diğer uçları (referans):
 
 | Uç | İşlev |
 |---|---|
@@ -324,30 +321,28 @@ Araç çalışınca:
    Tam rapor: https://paste.rs/xxxx
    ```
 
-### Operatör tarafı — alınan raporları okuma (tek seferlik kurulum)
+### Raporları telefondan okuma (tek seferlik kurulum)
 
-1. Telefona **ntfy** uygulamasını kur (Android: Play Store / F-Droid, iOS: App Store)
-   **veya** bilgisayarda `https://ntfy.sh/ahenk-debug-ac4cb248e0fde19a1c70` adresini aç.
-2. Uygulamada **"+ Abone ol / Subscribe to topic"** deyip şu konuyu gir:
+1. Telefona **ntfy** uygulamasını kurun (Android: Play Store / F-Droid, iOS: App Store)
+   **veya** bilgisayarda `https://ntfy.sh/ahenk-debug` adresini açın.
+2. Uygulamada **"+ Abone ol / Subscribe to topic"** deyip şu konuyu girin:
    ```
-   ahenk-debug-ac4cb248e0fde19a1c70
+   ahenk-debug
    ```
    (Sunucu: `ntfy.sh` — varsayılan.)
 3. Artık çalışan her tahtanın özeti + rapor linki anlık bildirim olarak düşer.
    FAIL varsa **urgent**, WARN varsa **high** önceliğiyle gelir.
-4. Bildirime dokun → özet açılır; içindeki **paste.rs linkine** dokun → tam raporu
-   tarayıcıda oku. (Web arayüzünde de aynı konu listelenir, mesaja tıklayıp linki
-   açabilirsin.)
+4. Bildirime dokunun → özet açılır; içindeki **paste.rs linkine** dokunun → tam
+   raporu tarayıcıda okuyun. (Web arayüzünde de aynı konu listelenir.)
 
 Konuyu değiştirmek için: `--send-to <konu>` veya `AHENK_DEBUG_NTFY=<konu>` ortam
-değişkeni (örn. kendi rastgele konunuzu üretip kullanın).
+değişkeni.
 
-> **Gizlilik uyarısı.** Rapor; okul adı, MAC, IP gibi tanımlayıcı bilgi içerir. Bu
-> depo herkese açıktır; dolayısıyla gömülü ntfy konusu da herkese görünür. Konuyu
-> bilen biri **abone olup gelen raporları okuyabilir** veya konuya spam atabilir.
-> Hassas ortamlarda kendi rastgele konunuzu (`--send-to`) kullanın, konuyu depoya
-> yazmayın ve gerekirse periyodik değiştirin; ya da depoyu özelleştirin (private).
-> `paste.rs` linkleri tahmin edilemezdir ama içerik üçüncü tarafta barınır.
+> **Gizlilik.** Rapor; okul adı, MAC, IP gibi tanımlayıcı bilgi içerir. `ahenk-debug`
+> herkese açık ve kolay tahmin edilen bir konudur; bilen herkes abone olup gelen
+> raporları görebilir ya da konuya çöp mesaj gönderebilir. Hassas kullanımda kendi
+> rastgele konunuzu (`--send-to <rastgele-konu>`) belirleyin. `paste.rs` linkleri
+> tahmin edilemez ama içerik üçüncü tarafta barınır.
 
 ---
 
@@ -417,7 +412,7 @@ olduğunu doğrulayın.
 ### C) Ağ/bağlantı sorunu
 Bölüm 4'teki DNS/TCP/TLS satırlarına bakın. Güvenlik duvarı, yanlış broker
 adresi, süresi dolmuş/eksik TLS sertifikası veya kopuk ağ geçidi olabilir.
-`--probe` ile kimlik doğrulamanın da çalıştığını kesin olarak sınayın.
+Aktif Pulsar testi (otomatik) kimlik doğrulamanın da çalışıp çalışmadığını gösterir.
 
 ### D) Kimlik MAC'i çözülemiyor
 Tahtada **kablolu ethernet** sürücüsü yüklü ve arayüz mevcut olmalı. Yalnız
@@ -441,7 +436,7 @@ anahtarlar:
 | `nics`, `identity_mac`, `live_mac`, `registered_mac`, `etainfo` | Ağ kimliği & klon |
 | `live_connection` | `{host, port, ips, established[], count, pid, owned_by_ahenk, method}` |
 | `logs` | Her olay için `{count, last, last_dt}` |
-| `active_probe` | `--probe` sonucu `{ok, auth_ok, stage, error}` |
+| `active_probe` | aktif Pulsar testi sonucu `{ok, auth_ok, stage, error}` |
 | `messenger_type`, `pulsar`/`xmpp` | Bağlantı yapılandırması |
 | `eta_api`, `school` | ETA kayıt sorgusu sonucu ve okul/il/ilçe |
 | `send` | otomatik gönderim sonucu `{paste_url, ntfy_topic, paste_ok, ntfy_ok}` |
@@ -482,11 +477,14 @@ anahtarlar:
 
 ## Gizlilik ve güvenlik
 
-- Parolalar raporda **maskelenir** (`e2a2…8df5`); tam parola yalnızca gerektiğinde
-  ve maskeli gösterilir.
-- Araç salt-okurdur; Ahenk yapılandırmasını/servisini değiştirmez.
-- `--probe`, ETA/Lider altyapısına yalnızca **tek bir test mesajı** yollar
-  (Ahenk'in açılışta zaten yaptığı işlem) ve komut aboneliğine dokunmaz.
+- Parolalar raporda **maskelenir** (`e2a2…8df5`); tam parola hiçbir yerde açıkça
+  gösterilmez.
+- Araç, Ahenk yapılandırmasını ve servisini **değiştirmez** (salt-okur).
+- Aktif Pulsar testi, broker'a yalnızca **tek bir test mesajı** yollar (Ahenk'in
+  açılışta zaten yaptığı işlem) ve komut aboneliğine dokunmaz.
 - ETA API sorgusu, cihazın kendi MAC'i ile yapılan, cihazın her açılışta yaptığı
   salt-okur bir sorgudur.
+- Otomatik gönderim açıkken rapor; `paste.rs` ve `ntfy.sh` üçüncü taraf
+  servislerine gider (bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)).
+  İstemiyorsanız `--no-send` ile kapatın.
 ```

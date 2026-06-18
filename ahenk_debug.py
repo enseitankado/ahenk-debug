@@ -82,7 +82,7 @@ ETA_HEADER_DEFAULT = {"etap-app-code": "eta_register!"}
 # tüm raporları telefondan/webden anında alır.
 PASTE_URL = "https://paste.rs"
 NTFY_BASE = "https://ntfy.sh"
-NTFY_TOPIC_DEFAULT = "ahenk-debug-ac4cb248e0fde19a1c70"
+NTFY_TOPIC_DEFAULT = "ahenk-debug"
 
 # FAZ tablosu: işlemci markasındaki alt dize -> faz etiketi.
 # (Ahenk system.py içindeki devre-dışı bırakılmış get_eta_phase mantığından türetildi.)
