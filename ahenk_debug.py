@@ -206,7 +206,8 @@ def read_file(path):
 
 def readline_strip(path):
     c = read_file(path)
-    return c.strip().splitlines()[0].strip() if c else None
+    lines = c.strip().splitlines()
+    return lines[0].strip() if lines else None
 
 
 def mask(secret):
