@@ -69,6 +69,8 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `--db YOL` | `ahenk.db` yolunu elle verir (varsayılan: conf'taki `BASE/dbPath`) |
 | `--mac MAC` | Kayıt durumu sorgusunu **bu makinenin değil**, verilen MAC için yapar (uzaktaki bir tahtayı kontrol için) |
 | `--no-send` | Otomatik gönderimi kapatır (varsayılan: rapor paste.rs+ntfy.sh ile operatöre **otomatik** gönderilir; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)) |
+| `--renk=NE-ZAMAN` | Renkli çıktı: `otomatik` (varsayılan; yalnız terminalde), `her-zaman` ya da `hicbir-zaman`. `NO_COLOR` ortam değişkeni tanımlıysa renk kapanır |
+| `-h`, `--help`, `--yardim` | Türkçe yardımı (seçenekler, örnekler, çıkış kodları) gösterir; root gerekmez |
 
 > **Aktif Pulsar testi** her çalıştırmada otomatik yapılır; yalnızca `--no-net`
 > ile veya messenger Pulsar değilse atlanır.
@@ -83,6 +85,8 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `1` | En az bir **WARN** var, **FAIL** yok |
 | `2` | En az bir **FAIL** (kritik) bulgu var |
 | `3` | Root değil — araç çalışmadan çıktı (sudo ile yeniden deneyin) |
+| `64` | Hatalı kullanım (tanınmayan seçenek, eksik argüman) |
+| `130` | Ctrl+C ile kesildi |
 
 Bu sayede araç izleme/otomasyon içinde de kullanılabilir.
 

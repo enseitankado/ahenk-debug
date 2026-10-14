@@ -97,7 +97,10 @@ PHASE_TABLE = [
 # ----------------------------------------------------------------------------
 # Çıktı / renk yardımcıları
 # ----------------------------------------------------------------------------
-_USE_COLOR = sys.stdout.isatty()
+# Renk yalnız terminalde; NO_COLOR (https://no-color.org) ve TERM=dumb
+# renkleri kapatır, --renk ile zorlanabilir.
+_USE_COLOR = (sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+              and os.environ.get("TERM", "") != "dumb")
 
 
 def _c(code, s):
@@ -1031,17 +1034,181 @@ def touch_devices():
 # ----------------------------------------------------------------------------
 # Ana akış
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# Komut satırı: GNU düzeninde, Türkçe ve renkli yardım
+# ----------------------------------------------------------------------------
+PROG = "ahenk_debug.py"
+RUN_URL = "https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh"
+
+# (seçenek, takma adlar, argüman, açıklama)
+_HELP_OPTIONS = [
+    ("Genel seçenekler:", [
+        ("-h, --help", ("--yardim",), "", "bu yardımı göster ve çık"),
+        ("    --renk", ("--color",), "NE-ZAMAN",
+         "renkli çıktı: otomatik (varsayılan; yalnız terminalde), her-zaman "
+         "ya da hicbir-zaman"),
+    ]),
+    ("Rapor ve çıktı:", [
+        ("    --json", (), "", "bütün ham veriyi ve bulguları JSON olarak bas "
+                               "(betiklerle işlenebilir)"),
+        ("    --out", (), "DOSYA", "raporu (renksiz) bu dosyaya da yaz"),
+        ("    --no-send", (), "", "raporun operatöre otomatik gönderimini kapat "
+                                  "(varsayılan: paste.rs + ntfy.sh ile gönderilir)"),
+    ]),
+    ("Testler ve kaynaklar:", [
+        ("    --no-net", (), "", "ağ testlerini (DNS/TCP/TLS, aktif Pulsar) atla; "
+                                 "yalnız yerel kontroller yapılır"),
+        ("    --db", (), "YOL", "ahenk.db yolunu elle ver (varsayılan: ahenk.conf'taki "
+                              "BASE/dbPath)"),
+        ("    --mac", (), "MAC", "kayıt durumu sorgusunu bu makine yerine verilen MAC "
+                               "için yap (uzaktaki bir tahtayı denetlemek için)"),
+    ]),
+]
+
+_HELP_EXAMPLES = [
+    (f"curl -fsSL {RUN_URL} | sudo bash",
+     "Depodan indirmeden çalıştır: tam, renkli rapor; sonunda özet ve teşhis."),
+    (f"curl -fsSL {RUN_URL} | sudo bash -s -- --no-net",
+     "Aynısı, ağ testleri olmadan (hızlı, yalnız yerel kontroller)."),
+    ("sudo ./ahenk_debug.py", "Yerel dosyadan tam rapor."),
+    ("sudo ./ahenk_debug.py --out rapor.txt",
+     "Raporu ekrana basarken renksiz olarak dosyaya da yaz."),
+    ("sudo ./ahenk_debug.py --json > ahenk.json",
+     "Bütün veriyi JSON olarak dosyaya kaydet (izleme/otomasyon için)."),
+    ("sudo ./ahenk_debug.py --mac 00:11:22:33:44:55 --no-send",
+     "Başka bir tahtanın kayıt durumunu sorgula; raporu kimseye gönderme."),
+    ("sudo ./ahenk_debug.py --no-send --renk=hicbir-zaman | less",
+     "Raporu renksiz olarak sayfa sayfa oku; gönderim yapma."),
+    ("sudo ./ahenk_debug.py; echo $?",
+     "Raporu al ve çıkış kodunu gör (0 sorunsuz, 1 uyarı, 2 kritik)."),
+]
+
+_HELP_EXIT = [
+    (0, "kritik ya da uyarı düzeyinde bulgu yok"),
+    (1, "en az bir UYARI var, KRİTİK yok"),
+    (2, "en az bir KRİTİK bulgu var"),
+    (3, "root değil; araç çalışmadan çıktı (sudo ile yeniden deneyin)"),
+    (64, "hatalı kullanım (tanınmayan seçenek, eksik argüman)"),
+    (130, "Ctrl+C ile kesildi"),
+]
+
+
+def _help_text():
+    import textwrap
+
+    width, col = 79, 26
+    head = lambda s: _c("1;32", s)      # noqa: E731  bölüm başlığı
+    opt = lambda s: _c("1;36", s)       # noqa: E731  seçenek
+    arg = lambda s: _c("36", s)         # noqa: E731  seçenek argümanı
+    out = [f"{head('Kullanım:')} {bold('sudo ' + PROG)} [{arg('SEÇENEK')}]...", ""]
+    for para in (
+        "Lider tarafında çevrimdışı görünen ya da uzak komut kabul etmeyen Ahenk "
+        "istemcilerini yerinde teşhis eder. Pardus ETAP tahtasında Ahenk'in kayıt "
+        "ve bağlanma zincirini baştan sona inceler; arızayı kimlik/klon çakışması, "
+        "ağ/bağlantı ve yerel yazılım sınıflarına ayırır.",
+        "Seçeneksiz çalıştırıldığında renkli, bölümlü bir rapor basar ve raporu "
+        "operatöre otomatik gönderir (bkz. --no-send).",
+    ):
+        out += textwrap.wrap(para, width, break_on_hyphens=False) + [""]
+    for i, (title, options) in enumerate(_HELP_OPTIONS):
+        out += ([] if i == 0 else [""]) + [head(title)]
+        for flags, _aliases, meta, desc in options:
+            plain = "  " + flags + ("=" + meta if meta else "")
+            indent = "      " if flags.startswith("    ") else "  "
+            colored = indent + ", ".join(opt(f.strip()) for f in flags.split(","))
+            colored += ("=" + arg(meta)) if meta else ""
+            lines = textwrap.wrap(desc, width - col, break_on_hyphens=False)
+            if len(plain) >= col - 1:
+                out.append(colored)
+                out += [" " * col + ln for ln in lines]
+            else:
+                out.append(colored + " " * (col - len(plain)) + lines[0])
+                out += [" " * col + ln for ln in lines[1:]]
+    out += ["", head("Notlar:")]
+    for para in (
+        "Root (sudo) yetkisi zorunludur: ahenk.conf ve messaging.conf (0600), "
+        "parolalar, aktif bağlantı testi ve süreç soketleri yalnız root "
+        "tarafından okunabilir.",
+        "Aktif Pulsar bağlantı testi her çalıştırmada yapılır; yalnız --no-net ile "
+        "ya da mesajlaşma Pulsar değilse atlanır.",
+    ):
+        out += textwrap.wrap(para, width - 2, initial_indent="  ",
+                             subsequent_indent="  ", break_on_hyphens=False) + [""]
+    out.append(head("Örnekler:"))
+    for cmd, desc in _HELP_EXAMPLES:
+        cmd_lines = [cmd]
+        if len(cmd) > width - 4 and " | " in cmd:
+            left, right = cmd.split(" | ", 1)
+            cmd_lines = [left + " \\", "  | " + right]
+        out.append("  " + _c("2", "$") + " " + bold(cmd_lines[0]))
+        out += ["      " + bold(ln) for ln in cmd_lines[1:]]
+        out += textwrap.wrap(desc, width - 6, initial_indent="      ",
+                             subsequent_indent="      ", break_on_hyphens=False)
+    out += ["", head("Çıkış durumu:")]
+    out += [f"  {bold(f'{code:>3}')}  {desc}" for code, desc in _HELP_EXIT]
+    out += ["", "Ayrıntılı belge, hata bildirimi ve kaynak kod:",
+            "<https://github.com/enseitankado/ahenk-debug>"]
+    return "\n".join(out)
+
+
+def _tr_argparse(message):
+    """argparse'ın İngilizce hata iletilerini Türkçeye çevirir."""
+    rules = (
+        (r"^unrecognized arguments: (.*)$", "tanınmayan seçenek: {0}"),
+        (r"^argument (\S+): expected one argument$", "{0} bir değer bekliyor"),
+        (r"^argument (\S+): ignored explicit argument '(.*)'$", "{0} değer almaz (verilen: {1})"),
+        (r"^ambiguous option: (\S+) could match (.*)$", "belirsiz seçenek: {0} (olası: {1})"),
+        (r"^argument (\S+): invalid choice: '(.*?)'.*$", "{0} için geçersiz değer: {1}"),
+    )
+    for pattern, text in rules:
+        m = re.match(pattern, message)
+        if m:
+            parts = [p for p in m.group(1).split("/") if p not in ("--color", "--yardim")]
+            return text.format("/".join(parts) or m.group(1), *m.groups()[1:])
+    return message
+
+
+class _Parser(argparse.ArgumentParser):
+    """Türkçe hata iletisi ve elle düzenlenmiş GNU yardımı."""
+
+    def error(self, message):
+        sys.stderr.write(red(f"{PROG}: {_tr_argparse(message)}") + "\n"
+                         f"Ayrıntılı bilgi için: {PROG} --help\n")
+        sys.exit(64)
+
+    def print_help(self, file=None):
+        print(_help_text(), file=file or sys.stdout)
+
+
+def _set_color_mode(argv):
+    """--renk / --color'ı ayrıştırmadan önce uygula (hata iletileri de uysun)."""
+    global _USE_COLOR
+    mode = None
+    for i, a in enumerate(argv):
+        if a.startswith(("--renk=", "--color=")):
+            mode = a.split("=", 1)[1]
+        elif a in ("--renk", "--color") and i + 1 < len(argv):
+            mode = argv[i + 1]
+    mode = {"always": "her-zaman", "never": "hicbir-zaman", "auto": "otomatik"}.get(mode, mode)
+    if mode == "her-zaman":
+        _USE_COLOR = True
+    elif mode == "hicbir-zaman":
+        _USE_COLOR = False
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Ahenk kayıt/bağlantı teşhis aracı")
-    ap.add_argument("--json", action="store_true", help="JSON çıktı")
-    ap.add_argument("--no-net", action="store_true", help="ağ testlerini atla")
-    ap.add_argument("--out", metavar="DOSYA", help="raporu dosyaya da yaz")
-    ap.add_argument("--db", default=None, help="ahenk.db yolu (vars: conf'tan)")
-    ap.add_argument("--mac", metavar="MAC", default=None,
-                    help="ETA API'de sorgulanacak MAC (vars: bu makinenin kimlik MAC'i)")
-    ap.add_argument("--no-send", action="store_true",
-                    help="raporun operatöre otomatik gönderimini kapat "
-                         "(varsayılan: paste.rs + ntfy.sh ile otomatik gönderilir)")
+    _set_color_mode(sys.argv[1:])
+    ap = _Parser(prog=PROG, add_help=False)
+    ap.add_argument("-h", "--help", "--yardim", action="help")
+    ap.add_argument("--renk", "--color", default="otomatik",
+                    choices=("otomatik", "her-zaman", "hicbir-zaman",
+                             "auto", "always", "never"))
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-net", action="store_true")
+    ap.add_argument("--out", metavar="DOSYA")
+    ap.add_argument("--db", default=None)
+    ap.add_argument("--mac", metavar="MAC", default=None)
+    ap.add_argument("--no-send", action="store_true")
     args = ap.parse_args()
 
     # --- ZORUNLU ROOT ---
