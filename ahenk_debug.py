@@ -1488,34 +1488,12 @@ def main():
 
     # ConsumerBusy değerlendirmesi — bayat mı, güncel mi?
     if logs["available"] and cb["count"] > 0:
-        cb_stale = False
-        reasons = []
-        if srv_start and cb_dt and cb_dt < srv_start:
-            cb_stale = True
-            reasons.append("son ConsumerBusy (%s) servis yeniden başlamadan (%s) önce"
-                           % (cb["last"], srv_start.strftime("%H:%M:%S")))
-        if last_success and cb_dt and last_success > cb_dt:
-            cb_stale = True
-            reasons.append("ConsumerBusy'den sonra başarılı Pulsar olayı var (%s)"
-                           % last_success.strftime("%Y-%m-%d %H:%M:%S"))
-        if live["count"] > 0:
-            reasons.append("şu an broker'a aktif TCP bağlantısı mevcut")
-
-        if cb_stale and conn_live:
-            R.line("ConsumerBusy (log)", "%d kez ama BAYAT (son: %s)" %
-                   (cb["count"], cb["last"]), OK)
-            R.finding(OK, "Geçmiş ConsumerBusy GÜNCEL DEĞİL — bağlantı şu an sağlıklı",
-                      "Loglardaki ConsumerBusy kayıtları eski bir oturuma ait ve artık "
-                      "geçerli değil:\n- " + "\n- ".join(reasons) +
-                      "\nKanıtlar bu makinenin komut topic'ine bağlı olduğunu gösteriyor.")
-        elif cb_stale and not conn_live:
-            R.line("ConsumerBusy (log)", "%d kez, bayat görünüyor ama canlı bağlantı "
-                   "doğrulanamadı (son: %s)" % (cb["count"], cb["last"]), WARN)
-            R.finding(WARN, "Eski ConsumerBusy var; güncel bağlantı doğrulanamadı",
-                      "Hata eski oturumdan ama şu an broker bağlantısı teyit edilemedi. "
-                      "Ağ testlerini --no-net'siz çalıştırın; aktif Pulsar testi "
-                      "(varsayılan) bağlantıyı kesinleştirir.")
-        else:
+        # Geçmiş (bayat) ConsumerBusy gösterilmez: servis yeniden başlamadan
+        # önceki ya da sonrasında başarılı Pulsar olayı olan kayıtlar eski
+        # oturuma aittir. Yalnızca güncel ConsumerBusy raporlanır.
+        cb_stale = bool((srv_start and cb_dt and cb_dt < srv_start) or
+                        (last_success and cb_dt and last_success > cb_dt))
+        if not cb_stale:
             # Güncel/aktif ConsumerBusy
             R.line("ConsumerBusy (log)", "%d kez, GÜNCEL (son: %s)" %
                    (cb["count"], cb["last"]), FAIL)

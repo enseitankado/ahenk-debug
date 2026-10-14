@@ -213,9 +213,12 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
 
 | Durum | Bulgu |
 |---|---|
-| ConsumerBusy **bayat** + bağlantı **canlı** | **OK** — "Geçmiş ConsumerBusy güncel değil, bağlantı sağlıklı" |
+| ConsumerBusy **bayat** (servis yeniden başlamadan önce ya da sonrasında başarı var) | **Gösterilmez** — geçmiş oturuma ait |
 | ConsumerBusy **güncel** + sonrasında başarı yok | **FAIL** — "Aktif klon/çakışma sürüyor" |
-| ConsumerBusy var ama canlılık **doğrulanamadı** | **WARN** — ağ erişimiyle (--no-net'siz) tekrar çalıştırın |
+
+Aynı kural Pulsar bağlantı hataları ve son `ERROR` satırı için de geçerlidir:
+geçmiş hatalar (servis yeniden başlamadan önceki, sonrasında başarılı olay olan ya
+da şu an canlı broker bağlantısı varken kalanlar) raporda gösterilmez.
 
 ---
 
@@ -296,7 +299,6 @@ listelenir.
 | Belirti | Bölüm | Olası neden |
 |---|---|---|
 | `ConsumerBusy` **güncel** (servis restart sonrası, sonrasında başarı yok) | 3 | **Aktif klon imaj** — aynı UUID başka makinede |
-| `ConsumerBusy` var ama **bayat** (canlı TCP + sonraki başarı) | 3 | Geçmiş sorun, **şu an sağlıklı** (FAIL değil) |
 | Kayıt MAC ≠ canlı MAC | 3 | İmaj farklı donanıma kopyalanmış |
 | Kimlik MAC'i belirlenemiyor / `etainfo` hatası | 3 | Kablolu ethernet/sürücü yok → kayıt çöker |
 | Kablolu arayüzde carrier/IP yok | 4 | **Fiziksel/DHCP** sorunu — hiçbir sunucuya ulaşılamaz |
