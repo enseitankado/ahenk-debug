@@ -138,18 +138,12 @@ DB'deki UUID (jid), parola (maskeli), `registered` bayrağı, kayıt zaman damga
 durdurur). Root ile: **`ahenk.conf` UID/parola ile DB'nin tutarlılığı** ve Pulsar
 topic/abonelik adları.
 
-**Kayıt türü** (`dn` alanına göre):
-- **Tam kayıt** — `dn` dolu: Lider, ajan için LDAP dizininde bir nesne (DN)
-  oluşturmuş; dizin-tabanlı politikalar uygulanabilir → **OK**.
-- **`registered_without_ldap`** — `registered=1` ama `dn` boş: Lider kayıt
-  yanıtında boş `agentDn` döndürmüş. Mesajlaşma/komut/görev **çalışır**, fakat
-  **LDAP dizin ağacına bağlı politikalar uygulanmaz** → **WARN**. Neden Lider
-  tarafıdır (kayıt anında LDAP'a erişememe, agent-OU yapılandırması veya bilinçli
-  LDAP'sız kurulum); bu Ahenk sürümünde kayıt sonrası LDAP tamamlama adımı
-  yorum satırı olduğundan `dn` kendiliğinden dolmaz. Bulgu, Lider'de ajanın LDAP
-  ağacında görünüp görünmediğini kontrol etmeyi önerir.
-- **Kayıt tamamlanmamış** — `registered=0` ve `dn` boş: tahta Lider'e hiç
-  kaydolamamış olabilir → **FAIL**.
+**Kayıt durumu** (`registered` bayrağına göre):
+- `registered=1` → kayıtlı → **OK**.
+- `registered=0` → tahta Lider'e hiç kaydolamamış olabilir → **FAIL**.
+
+Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
+(LDAP dizin nesnesi) yalnızca bilgi olarak gösterilir, boş olması bulgu üretmez.
 
 ### 3) Kimlik MAC'i, Klon/Çakışma ve Canlı Bağlantı
 - Tüm ağ arayüzleri (MAC, sürücü, veri yolu, kablosuz/kablolu, durum).
@@ -309,8 +303,7 @@ listelenir.
 | Broker portuna TCP açılamıyor | 4 | **Güvenlik duvarı / yanlış adres / sunucu kapalı** → subscribe olamaz |
 | DNS sunucusu yok / ad çözülemiyor | 4 | **DNS** sorunu — broker adı IP'ye çevrilemez |
 | DNS/TCP/TLS başarısız, ağ geçidi yok | 4 | **Ağ/bağlantı** sorunu |
-| `registered=1` ama `dn` boş | 2 | **registered_without_ldap** — mesajlaşma çalışır, LDAP politikaları uygulanmaz (Lider tarafı) |
-| `registered=0` ve `dn` boş | 2 | Kayıt **hiç tamamlanmamış** |
+| `registered=0` | 2 | Kayıt **hiç tamamlanmamış** |
 | Servis pasif / crash-loop, conf↔db uyuşmazlığı | 1–2 | **Yerel yazılım** sorunu |
 | Disk dolu, DB bütünlüğü bozuk | 1–2 | **Yerel kaynak** sorunu — DB/log yazımı bozulur |
 | Mevcut oturumda ImportError/Traceback | 1 | **Bağımlılık/başlangıç** çökmesi |

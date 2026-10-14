@@ -928,8 +928,7 @@ def build_send_summary(D, findings):
     lc = D.get("live_connection") or {}
     lines.append("servis: %s | canlı TCP: %s | kayıt: %s" % (
         D.get("service_active"), lc.get("count"),
-        ("LDAP'lı" if D.get("ldap_registered") else "registered_without_ldap"
-         if D.get("registration_kind") else "?")))
+        {"1": "var", "0": "yok"}.get(str(D.get("registered")), "?")))
     lines.append("BULGU: %d FAIL, %d WARN" % (n_fail, n_warn))
     # En önemli birkaç bulguyu ekle
     order = {"FAIL": 0, "WARN": 1}
@@ -1347,42 +1346,15 @@ def main():
                OK if str(db_reg["registered"]) == "1" else WARN)
         dn = (db_reg["dn"] or "").strip()
         registered_flag = str(db_reg["registered"]) == "1"
-        D["ldap_registered"] = bool(dn)
-        if dn:
-            R.line("LDAP dn", dn, OK)
-            R.line("Kayıt türü", "Tam kayıt (LDAP dizin nesnesi var)", OK)
-        elif registered_flag:
-            # registered=1 ama dn boş => Lider 'registered_without_ldap' döndürmüş;
-            # mesajlaşma çalışır, dizin (LDAP) nesnesi yoktur.
-            D["registration_kind"] = "registered_without_ldap"
-            R.line("LDAP dn", "(boş)", WARN)
-            R.line("Kayıt türü", "registered_without_ldap (LDAP'sız kayıt)", WARN)
-            R.finding(WARN, "Kayıt 'registered_without_ldap' — LDAP dizin nesnesi yok",
-                      "Tahta Pulsar mesajlaşması için KAYITLI (registered=1) ama Lider "
-                      "kayıt yanıtında boş 'agentDn' döndürmüş; LDAP dizininde bu ajan "
-                      "için bir nesne (DN) yok.\n"
-                      "ETKİ: Çevrimiçilik, komut topic'ine subscribe ve görev (task) "
-                      "yürütme ÇALIŞIR. Ancak LDAP DİZİN AĞACINA dayalı politikalar "
-                      "(OU/grup/DN'e bağlı profil ve politikalar) bu makineye "
-                      "UYGULANMAZ.\n"
-                      "NEDEN: İstemci/donanım kaynaklı değildir; kayıt anında Lider'in "
-                      "LDAP'a erişememesi, agent OU/DN yolunun yapılandırılmamış olması "
-                      "veya kurulumun bilinçli olarak LDAP'sız olması. Bu Ahenk "
-                      "sürümünde kayıt sonrası LDAP tamamlama adımı (ahenkd.py) "
-                      "yorum satırıdır; dn kendiliğinden dolmaz.\n"
-                      "KONTROL: Lider tarafında ajanın LDAP ağacında (agents/ajanlar "
-                      "OU'su altında) görünüp görünmediğine bakın. Görünmüyorsa Lider'in "
-                      "LDAP entegrasyonu ve agent-OU ayarını kontrol edin. Yeniden kayıt "
-                      "(ahenkd.py clean + restart) YALNIZCA Lider bu kez dolu bir "
-                      "agentDn döndürürse dn'yi doldurur.\n"
-                      "NOT: Dizin-tabanlı politika kullanılmıyorsa (yalnız task/Pulsar "
-                      "yönetimi) bu uyarı pratikte zararsızdır.")
-        else:
-            # registered=0 ve dn boş => kayıt hiç tamamlanmamış (farklı/daha ciddi durum)
-            R.line("LDAP dn", "(boş) — kayıt tamamlanmamış", FAIL)
-            R.finding(FAIL, "Kayıt tamamlanmamış (registered=0, dn boş)",
-                      "Ne LDAP nesnesi var ne de registered=1. Tahta Lider'e hiç "
-                      "kaydolamamış olabilir; kayıt akışını (ağ + Lider yanıtı) inceleyin.")
+        # Mevcut mimari LDAP kullanmıyor: dn (LDAP dizin nesnesi) yalnızca bilgi
+        # amaçlı gösterilir, boş olması bulgu üretmez. Kayıt kararı registered
+        # bayrağına göre verilir.
+        R.line("LDAP dn", dn or "(boş — LDAP kullanılmıyor, denetlenmez)", INFO)
+        if not registered_flag:
+            R.line("Kayıt türü", "kayıt tamamlanmamış (registered=0)", FAIL)
+            R.finding(FAIL, "Kayıt tamamlanmamış (registered=0)",
+                      "Tahta Lider'e hiç kaydolamamış olabilir; kayıt akışını "
+                      "(ağ + Lider yanıtı) inceleyin.")
         R.line("Kayıt zamanı", db_reg["timestamp"], INFO)
     else:
         R.line("DB", "okunamadı: %s" % (db["error"] or "?"),
