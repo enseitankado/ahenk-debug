@@ -384,6 +384,7 @@ def analyze_logs(max_lines=6000):
     res = {k: {"count": 0, "last": None, "last_dt": None} for k in patterns}
     res["available"] = False
     res["last_error"] = None
+    res["last_error_dt"] = None
     res["last_line_dt"] = None
     # Logları KRONOLOJİK sırayla birleştir (eski .1 önce, güncel .log sonra).
     readable = [lf for lf in LOG_FILES if os.access(lf, os.R_OK)]
@@ -409,6 +410,7 @@ def analyze_logs(max_lines=6000):
                     res[key]["last_dt"] = dt
         if "ERROR" in ln:
             res["last_error"] = ln.strip()[:200]
+            res["last_error_dt"] = dt
     return res
 
 
@@ -1758,11 +1760,21 @@ def main():
     if logs["available"]:
         if logs["publish_ok"]["last"]:
             R.line("Son başarılı yayın", logs["publish_ok"]["last"], OK)
-        if logs["pulsar_conn_fail"]["count"]:
+        # Geçmiş (bayat) hatalar gösterilmez: servis yeniden başlamadan önceki,
+        # sonrasında başarılı Pulsar olayı olan ya da şu an canlı broker
+        # bağlantısı varken kalan hatalar artık geçerli değildir.
+        def _stale(dt):
+            if live["count"] > 0:
+                return True
+            if dt is None:
+                return False
+            return bool((srv_start and dt < srv_start) or
+                        (last_success and last_success > dt))
+        pcf = logs["pulsar_conn_fail"]
+        if pcf["count"] and not _stale(pcf["last_dt"]):
             R.line("Pulsar bağlantı hataları", "%d kez, son: %s" %
-                   (logs["pulsar_conn_fail"]["count"], logs["pulsar_conn_fail"]["last"]),
-                   WARN)
-        if logs["last_error"]:
+                   (pcf["count"], pcf["last"]), WARN)
+        if logs["last_error"] and not _stale(logs["last_error_dt"]):
             R.note("Son ERROR: %s" % logs["last_error"])
 
     # ---------------- 5) ETA Kayıt Sunucusu (Okul/Şehir/İlçe) ----------------
