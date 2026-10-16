@@ -44,6 +44,7 @@ için root gerekir; root değilse araç kısıtlı çalışır ve uyarır.
 import argparse
 import datetime
 import glob
+import gzip
 import json
 import os
 import platform
@@ -495,25 +496,70 @@ def analyze_eta_register_log():
     return res
 
 
-def ahenk_repo_status(installed):
-    """Depodaki aday Ahenk sürümü ve kurulu sürümün eski olup olmadığı."""
-    res = {"candidate": None, "outdated": None, "etap_repo": None,
-           "unattended": None}
+ETAP_REPO_BASE = "http://depo.etap.org.tr/etap"
+
+
+def version_lt(a, b):
+    """Debian sürüm karşılaştırması: a < b mi?"""
+    rc, _, _ = run(["dpkg", "--compare-versions", a, "lt", b])
+    return rc == 0
+
+
+def published_ahenk_version(timeout=15):
+    """ETAP deposunun yayındaki paket dizininden en son Ahenk sürümü.
+    Dönüş: (sürüm|None, kaynak URL|None, hata|None)."""
+    osrel = read_file("/etc/os-release") or ""
+    # ETAP: VERSION_CODENAME=etap-yirmiuc, PARDUS_CODENAME=yirmiuc; depo dizini 'yirmiuc'
+    suites = []
+    for key in ("PARDUS_CODENAME", "VERSION_CODENAME"):
+        m = re.search(r"^%s=\"?([\w-]+)" % key, osrel, re.M)
+        if m:
+            suites.append(re.sub(r"^etap-", "", m.group(1)))
+    suites.append("yirmiuc")
+    suites = list(dict.fromkeys(suites))
+    err = None
+    for suite, comp in [(su, co) for su in suites for co in ("contrib", "main")]:
+        url = "%s/dists/%s/%s/binary-amd64/Packages.gz" % (ETAP_REPO_BASE, suite, comp)
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                text = gzip.decompress(r.read()).decode("utf-8", "replace")
+        except Exception as e:
+            err = "%s: %s" % (type(e).__name__, e)
+            continue
+        latest = None
+        for blk in text.split("\n\n"):
+            if re.search(r"^Package: ahenk$", blk, re.M):
+                v = re.search(r"^Version: (\S+)", blk, re.M)
+                if v and (latest is None or version_lt(latest, v.group(1))):
+                    latest = v.group(1)
+        if latest:
+            return latest, url, None
+    return None, None, err or "Ahenk paket dizininde bulunamadı"
+
+
+def ahenk_repo_status(installed, online=True):
+    """Kurulu Ahenk; yayındaki en son sürüm ve yerel apt adayıyla karşılaştırılır."""
+    res = {"candidate": None, "published": None, "published_url": None,
+           "published_error": None, "latest": None, "outdated": None,
+           "lists_stale": None, "etap_repo": None, "unattended": None}
     rc, out, _ = run("LC_ALL=C apt-cache policy ahenk")
     if rc == 0:
         m = re.search(r"Candidate:\s*(\S+)", out)
         if m and m.group(1) != "(none)":
             res["candidate"] = m.group(1)
         res["etap_repo"] = "depo.etap.org.tr/etap" in out
-    if installed and res["candidate"] and installed != res["candidate"]:
-        rc, _, _ = run(["dpkg", "--compare-versions", installed, "lt", res["candidate"]])
-        res["outdated"] = (rc == 0)
-    elif installed and res["candidate"]:
-        res["outdated"] = False
+    if online:
+        res["published"], res["published_url"], res["published_error"] = \
+            published_ahenk_version()
+    # Ölçüt: yayındaki en son sürüm; alınamazsa yerel apt adayı
+    res["latest"] = res["published"] or res["candidate"]
+    if res["published"] and res["candidate"]:
+        res["lists_stale"] = version_lt(res["candidate"], res["published"])
+    if installed and res["latest"]:
+        res["outdated"] = installed != res["latest"] and version_lt(installed, res["latest"])
     rc, st, _ = run("dpkg-query -W -f='${Status}' eta-unattended-upgrade")
     res["unattended"] = (rc == 0 and "install ok installed" in st)
     return res
-
 
 # ----------------------------------------------------------------------------
 # Ağ / bağlantı testleri
@@ -1373,25 +1419,48 @@ def main():
                   "%s\n%s" % (etareg_reason(), etareg_fix))
 
     # Sürüm: depodaki adaydan eski mi?
-    repo = ahenk_repo_status(pkg if ahenk_installed else None)
+    repo = ahenk_repo_status(pkg if ahenk_installed else None, online=not args.no_net)
     D["ahenk_repo"] = repo
+    if repo["published"]:
+        R.line("Yayındaki en son Ahenk", "%s (%s)" % (repo["published"], ETAP_REPO_BASE), INFO)
+    elif args.no_net:
+        R.line("Yayındaki en son Ahenk", "--no-net ile atlandı (yerel apt listesine bakılıyor)",
+               INFO)
+    else:
+        R.line("Yayındaki en son Ahenk", "alınamadı: %s" % repo["published_error"], WARN)
     if repo["candidate"]:
-        R.line("Depodaki Ahenk", repo["candidate"], INFO)
+        R.line("Yerel apt adayı", repo["candidate"],
+               WARN if repo["lists_stale"] else INFO)
     elif repo["etap_repo"] is False:
-        R.line("Depodaki Ahenk", "yok — ETAP deposu (depo.etap.org.tr/etap) tanımlı değil",
+        R.line("Yerel apt adayı", "yok — ETAP deposu (depo.etap.org.tr/etap) tanımlı değil",
                WARN)
-    if repo["outdated"]:
-        R.line("Ahenk sürümü", "ESKİ (kurulu %s < depo %s)" % (pkg, repo["candidate"]), WARN)
-        R.finding(WARN, "Ahenk eski sürümde kalmış (%s, depoda %s)" % (pkg, repo["candidate"]),
-                  "%s\n"
-                  "ÇÖZÜM: sudo apt update && sudo apt install ahenk  (ya da Pardus "
-                  "Güncelleme / 'sudo apt full-upgrade'). Yükseltme servisi de yeniden "
-                  "başlatır.\nNOT: Karşılaştırma yerel paket listesine göredir; "
-                  "'apt update' yapılmamışsa depo sürümü eski görünebilir." % (
-                      "Depoda daha yeni sürüm var ama kurulmamış." if repo["unattended"] else
-                      "eta-unattended-upgrade kurulu değil: otomatik güncelleme ETAP "
-                      "paketlerini hiç yükseltmez; yeni Ahenk bu paketi bağımlılık olarak "
-                      "istediğinden 'apt-get upgrade' de onu yükseltmez, 'geri tutar'."))
+    if repo["lists_stale"]:
+        R.note("Yerel paket listesi eski ('apt update' yapılmamış): apt yalnızca %s "
+               "sürümünü görüyor, yayında %s var." % (repo["candidate"], repo["published"]))
+    if ahenk_installed and repo["latest"]:
+        ref = "yayındaki" if repo["published"] else "yerel apt listesindeki"
+        if repo["outdated"]:
+            R.line("Ahenk sürümü", "ESKİ (kurulu %s < %s en son %s)" %
+                   (pkg, ref, repo["latest"]), WARN)
+            R.finding(WARN, "Ahenk en son sürüm değil (kurulu %s, en son %s)" %
+                      (pkg, repo["latest"]),
+                      "%s%s\n"
+                      "ÇÖZÜM: sudo apt update && sudo apt install ahenk  (ya da Pardus "
+                      "Güncelleme / 'sudo apt full-upgrade'). Yükseltme servisi de yeniden "
+                      "başlatır.%s" % (
+                          "Depoda daha yeni sürüm yayında ama kurulmamış."
+                          if repo["unattended"] else
+                          "eta-unattended-upgrade kurulu değil: otomatik güncelleme ETAP "
+                          "paketlerini hiç yükseltmez; yeni Ahenk bu paketi bağımlılık "
+                          "olarak istediğinden 'apt-get upgrade' de onu yükseltmez, "
+                          "'geri tutar'.",
+                          " Yerel paket listesi de eski; önce 'apt update' gerekir."
+                          if repo["lists_stale"] else "",
+                          "" if repo["published"] else
+                          "\nNOT: Yayındaki sürüm alınamadı; karşılaştırma yerel paket "
+                          "listesine göredir."))
+        else:
+            R.line("Ahenk sürümü", "güncel (%s en son sürüm: %s)" % (ref, repo["latest"]), OK)
 
     rc, active, _ = run("systemctl is-active ahenk.service")
     rc2, enabled, _ = run("systemctl is-enabled ahenk.service")

@@ -142,11 +142,16 @@ başlatmaz). Bu yüzden:
   denetimi) ve `/root/.cache/eta-register/eta-register.log` (pkexec ile çalışan
   kurulum adımı): son denetimin zamanı ve sonucu, denetim sayısı, son kayıt/
   güncelleme, Ahenk kurulum ve servis başlatma sonucu.
-- **Eski Ahenk** — kurulu sürüm depodaki adaydan (`apt-cache policy ahenk`) eskiyse
-  **WARN**. `eta-unattended-upgrade` kurulu değilse otomatik güncelleme ETAP
-  paketlerini yükseltmez ve yeni Ahenk bu bağımlılığı istediğinden `apt-get
-  upgrade` onu geri tutar; çözüm `sudo apt install ahenk` ya da `apt full-upgrade`.
-  ETAP deposu tanımlı değilse ayrıca uyarılır.
+- **Ahenk en son sürüm mü?** — kurulu sürüm, ETAP deposunda **yayındaki en son
+  sürümle** karşılaştırılır (`depo.etap.org.tr/etap/dists/<sürüm>/contrib/…/Packages.gz`
+  doğrudan okunur); eskiyse **WARN**. Yerel apt adayı yayındakinden eskiyse
+  "yerel paket listesi eski (`apt update` yapılmamış)" diye ayrıca belirtilir.
+  Depoya ulaşılamazsa ya da `--no-net` verilmişse yerel apt listesine
+  (`apt-cache policy ahenk`) göre karşılaştırılır. `eta-unattended-upgrade` kurulu
+  değilse otomatik güncelleme ETAP paketlerini yükseltmez ve yeni Ahenk bu
+  bağımlılığı istediğinden `apt-get upgrade` onu geri tutar; çözüm
+  `sudo apt install ahenk` ya da `apt full-upgrade`. ETAP deposu tanımlı değilse
+  ayrıca uyarılır.
 
 Ayrıca Ahenk'i **yerelde sekteye uğratan** sorunlar:
 - **Servis crash-loop** — `NRestarts` sayısı. Sürekli yeniden başlıyorsa
@@ -333,7 +338,7 @@ listelenir.
 | `registered=0` | 2 | Kayıt **hiç tamamlanmamış** |
 | Ahenk kurulu değil | 1 | **ETA Kayıt kurulumu yapmamış** — Düzenle → Kaydet |
 | Servis pasif ve logda kendini durdurma | 1 | **Ahenk kendini durdurmuş** — ağ/Pulsar sorunu sonrası |
-| Kurulu Ahenk < depodaki sürüm | 1 | **Eski Ahenk** — `apt install ahenk` |
+| Kurulu Ahenk < yayındaki en son sürüm | 1 | **Eski Ahenk** — `apt install ahenk` |
 | Servis pasif / crash-loop, conf↔db uyuşmazlığı | 1–2 | **Yerel yazılım** sorunu |
 | Disk dolu, DB bütünlüğü bozuk | 1–2 | **Yerel kaynak** sorunu — DB/log yazımı bozulur |
 | Mevcut oturumda ImportError/Traceback | 1 | **Bağımlılık/başlangıç** çökmesi |
