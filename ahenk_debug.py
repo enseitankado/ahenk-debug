@@ -379,7 +379,7 @@ def analyze_logs(max_lines=6000):
         "pulsar_connected": re.compile(r"Connected to Pulsar|Pulsar connection successful", re.I),
         "received":         re.compile(r"Received message|Fired event", re.I),
         "tls_err":          re.compile(r"certificate|TLS|SSL", re.I),
-        "stopping":         re.compile(r"Stopping the service|Ahenk is stopping|systemctl stop ahenk", re.I),
+        "stopping":         re.compile(r"Stopping the service|Ahenk is stopping|Stopping Ahenk service|systemctl stop ahenk", re.I),
     }
     res = {k: {"count": 0, "last": None, "last_dt": None} for k in patterns}
     res["available"] = False
@@ -411,6 +411,107 @@ def analyze_logs(max_lines=6000):
         if "ERROR" in ln:
             res["last_error"] = ln.strip()[:200]
             res["last_error_dt"] = dt
+    return res
+
+
+# ----------------------------------------------------------------------------
+# ETA kayıt (eta-register) günlüğü ve Ahenk sürüm/depo durumu
+# ----------------------------------------------------------------------------
+# Ahenk ISO'da gelmez; tahtaya yalnızca ETA kayıt kurar. Arka plan denetimi
+# (eta-register -c) yalnızca etapadmin oturum açılışında çalışır ve
+# ~/.cache/eta-register/eta-register.log'a yazar. Kurulum adımı pkexec ile root
+# olarak çalıştığından kurulum/servis sonuçları /root/.cache altına düşer.
+ETA_REG_LOGS = ["/home/*/.cache/eta-register/eta-register.log",
+                "/root/.cache/eta-register/eta-register.log"]
+ETA_REG_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ - (\w+) - [\w.]+:\d+ - (.*)$")
+
+# (alt dize, sonuç kodu, Türkçe açıklama) — arka plan denetiminin çıkış nedenleri
+ETA_REG_OUTCOMES = [
+    ("cannot be run in a virtual machine", "vm",
+     "sanal makine algılandı; ETA kayıt çalışmıyor"),
+    ("must be run by the", "user",
+     "oturum etapadmin değil; denetim yalnızca etapadmin oturumunda çalışır"),
+    ("Could not get MAC address", "no-mac",
+     "kablolu ağ kartının MAC adresi alınamadı"),
+    ("Touch vendor check failed", "vendor",
+     "dokunmatik üretici etap.org.tr/devices.json listesinde yok; ETA kayıt kurulum yapmaz"),
+    ("All attempts to connect failed", "no-connection",
+     "10 dakika boyunca internete/ETA sunucusuna ulaşılamadı"),
+    ("Failed to parse server response", "server",
+     "ETA sunucusu geçersiz yanıt verdi"),
+    ("required package is not installed. Launching installer", "installer",
+     "tahta kayıtlı, Ahenk kurulu değil; Ahenk kurulumu başlatıldı"),
+    ("Device is registered and package is installed", "installed",
+     "tahta kayıtlı ve Ahenk kurulu; denetim başka işlem yapmadan çıktı "
+     "(durmuş servisi başlatmaz)"),
+    ("Device not registered. Launching registration GUI", "not-registered",
+     "tahta ETA'da kayıtlı değil; kayıt ekranı açıldı"),
+]
+
+
+def analyze_eta_register_log():
+    """ETA kayıt günlüklerini oku; son arka plan denetimi, kurulum ve servis sonucu."""
+    res = {"available": False, "files": [], "runs": 0, "last_run": None,
+           "outcome": None, "outcome_text": None, "outcome_dt": None,
+           "gui_update_ok": None, "install": None, "install_dt": None,
+           "service": None, "service_dt": None}
+    entries = []
+    for pat in ETA_REG_LOGS:
+        for path in sorted(glob.glob(pat)):
+            c = read_file(path)
+            if c is None:
+                continue
+            res["files"].append(path)
+            for ln in c.splitlines():
+                m = ETA_REG_LINE_RE.match(ln)
+                if m:
+                    entries.append((m.group(1), m.group(3)))
+    if not res["files"]:
+        return res
+    res["available"] = True
+    entries.sort(key=lambda e: e[0])  # birden çok dosya: zamana göre birleştir
+    for ts, msg in entries:
+        dt = parse_log_ts(ts)
+        if "--- Dispatcher Starting ---" in msg:
+            res["runs"] += 1
+            res["last_run"] = dt
+            res["outcome"] = res["outcome_text"] = res["outcome_dt"] = None
+            continue
+        for needle, code, text in ETA_REG_OUTCOMES:
+            if needle in msg:
+                res["outcome"], res["outcome_text"], res["outcome_dt"] = code, text, dt
+                break
+        if "Registration/update API call successful" in msg:
+            res["gui_update_ok"] = dt
+        if "Installation completed successfully" in msg:
+            res["install"], res["install_dt"] = "ok", dt
+        elif "Installation failed" in msg or "Update failed with exit code" in msg:
+            res["install"], res["install_dt"] = "fail", dt
+        if re.search(r"Service \S+ started successfully", msg):
+            res["service"], res["service_dt"] = "ok", dt
+        elif "Failed to start service" in msg:
+            res["service"], res["service_dt"] = "fail", dt
+    return res
+
+
+def ahenk_repo_status(installed):
+    """Depodaki aday Ahenk sürümü ve kurulu sürümün eski olup olmadığı."""
+    res = {"candidate": None, "outdated": None, "etap_repo": None,
+           "unattended": None}
+    rc, out, _ = run("LC_ALL=C apt-cache policy ahenk")
+    if rc == 0:
+        m = re.search(r"Candidate:\s*(\S+)", out)
+        if m and m.group(1) != "(none)":
+            res["candidate"] = m.group(1)
+        res["etap_repo"] = "depo.etap.org.tr/etap" in out
+    if installed and res["candidate"] and installed != res["candidate"]:
+        rc, _, _ = run(["dpkg", "--compare-versions", installed, "lt", res["candidate"]])
+        res["outdated"] = (rc == 0)
+    elif installed and res["candidate"]:
+        res["outdated"] = False
+    rc, st, _ = run("dpkg-query -W -f='${Status}' eta-unattended-upgrade")
+    res["unattended"] = (rc == 0 and "install ok installed" in st)
     return res
 
 
@@ -1238,9 +1339,59 @@ def main():
     # ---------------- 1) Genel / servis / yerel sağlık ----------------
     R.section("1) Genel Durum, Servis ve Yerel Sağlık")
     rc, pkg, _ = run("dpkg-query -W -f='${Version}' ahenk")
-    D["ahenk_version"] = pkg if rc == 0 else None
-    R.line("Ahenk paketi", pkg if rc == 0 else "tespit edilemedi",
-           OK if rc == 0 else WARN)
+    ahenk_installed = rc == 0 and bool(pkg)
+    D["ahenk_version"] = pkg if ahenk_installed else None
+    logs = analyze_logs()
+    etareg = analyze_eta_register_log()
+    D["eta_register_log"] = {k: (v.strftime("%Y-%m-%d %H:%M:%S")
+                                 if isinstance(v, datetime.datetime) else v)
+                             for k, v in etareg.items()}
+    etareg_fix = ("ÇÖZÜM: etapadmin ile oturum açıp ETA Kayıt'ı açın → Düzenle → "
+                  "(sınıf adını değiştirin) → Kaydet. Kayıt güncellenince ETA "
+                  "Kayıt 'apt install ahenk' ve 'systemctl enable --now "
+                  "ahenk.service' çalıştırır. (ETA Kayıt kayıtlı tahtada yalnızca "
+                  "bilgi sayfasını gösterir; kurulumu yalnızca Kaydet tetikler.)")
+
+    def etareg_reason():
+        if not etareg["available"]:
+            return ("ETA Kayıt günlüğü yok: arka plan denetimi bu tahtada hiç "
+                    "çalışmamış (etapadmin oturumu hiç açılmamış olabilir).")
+        if etareg["last_run"] is None:
+            return "ETA Kayıt günlüğünde arka plan denetimi kaydı yok."
+        return ("ETA Kayıt son arka plan denetimi (%s): %s." % (
+            etareg["last_run"].strftime("%Y-%m-%d %H:%M"),
+            etareg["outcome_text"] or "sonuç kaydı yok"))
+
+    if ahenk_installed:
+        R.line("Ahenk paketi", pkg, OK)
+    else:
+        R.line("Ahenk paketi", "KURULU DEĞİL", FAIL)
+        R.finding(FAIL, "Ahenk kurulu değil — ETA Kayıt kurulumu yapmamış",
+                  "Ahenk ETAP imajında gelmez; tahtaya yalnızca ETA Kayıt kurar "
+                  "(etapadmin oturum açılışındaki arka plan denetimi ya da kayıt/"
+                  "güncelleme sonrası). Ahenk olmadan tahta Lider'de görünmez.\n"
+                  "%s\n%s" % (etareg_reason(), etareg_fix))
+
+    # Sürüm: depodaki adaydan eski mi?
+    repo = ahenk_repo_status(pkg if ahenk_installed else None)
+    D["ahenk_repo"] = repo
+    if repo["candidate"]:
+        R.line("Depodaki Ahenk", repo["candidate"], INFO)
+    elif repo["etap_repo"] is False:
+        R.line("Depodaki Ahenk", "yok — ETAP deposu (depo.etap.org.tr/etap) tanımlı değil",
+               WARN)
+    if repo["outdated"]:
+        R.line("Ahenk sürümü", "ESKİ (kurulu %s < depo %s)" % (pkg, repo["candidate"]), WARN)
+        R.finding(WARN, "Ahenk eski sürümde kalmış (%s, depoda %s)" % (pkg, repo["candidate"]),
+                  "%s\n"
+                  "ÇÖZÜM: sudo apt update && sudo apt install ahenk  (ya da Pardus "
+                  "Güncelleme / 'sudo apt full-upgrade'). Yükseltme servisi de yeniden "
+                  "başlatır.\nNOT: Karşılaştırma yerel paket listesine göredir; "
+                  "'apt update' yapılmamışsa depo sürümü eski görünebilir." % (
+                      "Depoda daha yeni sürüm var ama kurulmamış." if repo["unattended"] else
+                      "eta-unattended-upgrade kurulu değil: otomatik güncelleme ETAP "
+                      "paketlerini hiç yükseltmez; yeni Ahenk bu paketi bağımlılık olarak "
+                      "istediğinden 'apt-get upgrade' de onu yükseltmez, 'geri tutar'."))
 
     rc, active, _ = run("systemctl is-active ahenk.service")
     rc2, enabled, _ = run("systemctl is-enabled ahenk.service")
@@ -1248,12 +1399,54 @@ def main():
     D["service_enabled"] = enabled
     sev = OK if active == "active" else FAIL
     R.line("Servis", "%s / %s" % (active, enabled), sev)
-    if active != "active":
-        R.finding(FAIL, "Ahenk servisi çalışmıyor (%s)" % active,
-                  "Servis durduysa makine kesinlikle çevrimdışı görünür. Pulsar "
-                  "bağlantısı 5 denemede kurulamazsa Ahenk kendini durdurur "
-                  "(systemctl stop ahenk.service).\n"
-                  "Komut: systemctl status ahenk.service  |  journalctl -u ahenk")
+    if ahenk_installed and active != "active":
+        st = logs["stopping"]
+        self_stopped = logs["available"] and st["count"] > 0
+        D["self_stopped"] = self_stopped
+        if self_stopped:
+            R.line("Kendini durdurma (log)", "son: %s" % st["last"], FAIL)
+            R.finding(FAIL, "Ahenk kendini durdurmuş — servis çalışmıyor",
+                      "Ahenk, Pulsar'a bağlanamayınca ya da kayıt denemeleri tükenince "
+                      "kendini 'systemctl stop ahenk.service' ile durdurur (son: %s). "
+                      "Bilinçli durdurma olduğundan systemd (Restart=always) yeniden "
+                      "başlatmaz; ETA Kayıt arka plan denetimi de 'Ahenk kurulu' deyip "
+                      "çıkar, servisi başlatmaz. Tahta bir sonraki açılışa kadar Lider'de "
+                      "çevrimdışı kalır.\n"
+                      "Önce ağ/Pulsar erişimini düzeltin (aşağıdaki bölümler), sonra: "
+                      "sudo systemctl start ahenk.service — ya da tahtayı yeniden başlatın.\n"
+                      "%s" % (st["last"], etareg_fix))
+        else:
+            R.finding(FAIL, "Ahenk servisi çalışmıyor (%s)" % active,
+                      "Servis durduysa makine kesinlikle çevrimdışı görünür. ETA Kayıt "
+                      "arka plan denetimi durmuş servisi başlatmaz.\n"
+                      "Komut: systemctl status ahenk.service  |  journalctl -u ahenk\n"
+                      "%s" % etareg_fix)
+
+    # ETA Kayıt günlüğü (bilgi; sorun varsa yukarıdaki bulgulara gerekçe olur)
+    if etareg["available"]:
+        if etareg["last_run"]:
+            R.line("ETA Kayıt son denetim", "%s — %s" % (
+                etareg["last_run"].strftime("%Y-%m-%d %H:%M"),
+                etareg["outcome_text"] or "sonuç kaydı yok"),
+                WARN if etareg["outcome"] in ("no-mac", "vendor", "no-connection",
+                                              "server", "user") else INFO)
+            R.line("ETA Kayıt denetim sayısı", str(etareg["runs"]), INFO)
+        if etareg["gui_update_ok"]:
+            R.line("ETA Kayıt son kayıt/güncelleme",
+                   etareg["gui_update_ok"].strftime("%Y-%m-%d %H:%M"), INFO)
+        if etareg["install"]:
+            R.line("ETA Kayıt Ahenk kurulumu", "%s (%s)" % (
+                "başarılı" if etareg["install"] == "ok" else "BAŞARISIZ",
+                etareg["install_dt"].strftime("%Y-%m-%d %H:%M")),
+                OK if etareg["install"] == "ok" else FAIL)
+            if etareg["install"] == "fail" and not ahenk_installed:
+                R.note("Kurulum günlüğü: /root/.cache/eta-register/eta-register.log")
+        if etareg["service"] == "fail":
+            R.line("ETA Kayıt servis başlatma", "BAŞARISIZ (%s)" %
+                   etareg["service_dt"].strftime("%Y-%m-%d %H:%M"), WARN)
+    else:
+        R.line("ETA Kayıt günlüğü", "yok (etapadmin oturumunda hiç çalışmamış olabilir)",
+               WARN if not ahenk_installed else INFO)
     if srv_start is not None:
         R.line("Başlangıç", srv_start.strftime("%Y-%m-%d %H:%M:%S"), INFO)
 
@@ -1452,7 +1645,6 @@ def main():
                       % (reg_mac, live_mac))
 
     # --- CANLI BAĞLANTI DOĞRULAMASI (statik log değil, gerçek durum) ---
-    logs = analyze_logs()
     D["logs"] = {k: v for k, v in logs.items() if isinstance(v, dict)}
     live = live_broker_connections(cp)
     D["live_connection"] = live

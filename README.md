@@ -123,6 +123,31 @@ yeterli. (Ahenk 2.0.10 için geçerlidir.)
 
 ### 1) Genel Durum, Servis ve Yerel Sağlık
 Ahenk paket sürümü, `ahenk.service` aktif/etkin durumu ve başlangıç zamanı.
+
+Ahenk ETAP imajında (ISO) gelmez; tahtaya **yalnızca ETA Kayıt** kurar. ETA
+Kayıt'ın arka plan denetimi yalnızca **etapadmin** oturum açılışında çalışır ve
+tahta kayıtlı + Ahenk kurulu ise başka işlem yapmadan çıkar (durmuş servisi
+başlatmaz). Bu yüzden:
+- **Ahenk kurulu değil** → **FAIL**; ETA Kayıt günlüğünden nedeni (sanal makine,
+  etapadmin dışı oturum, dokunmatik üretici reddi, 10 dk internet yok, MAC yok…)
+  ve çözüm gösterilir.
+- **Ahenk kendini durdurmuş** — Pulsar'a bağlanamayınca ya da kayıt denemeleri
+  tükenince Ahenk `systemctl stop ahenk.service` ile kendini durdurur; systemd
+  bunu yeniden başlatmaz → **FAIL**.
+- Her iki durumda önerilen çözüm: etapadmin ile **ETA Kayıt → Düzenle → (sınıf
+  adını değiştir) → Kaydet**. Kayıt güncellenince ETA Kayıt `apt install ahenk` ve
+  `systemctl enable --now ahenk.service` çalıştırır. Kayıtlı tahtada ETA Kayıt
+  yalnızca bilgi sayfasını gösterir; kurulumu yalnızca **Kaydet** tetikler.
+- **ETA Kayıt günlüğü** — `/home/*/.cache/eta-register/eta-register.log` (arka plan
+  denetimi) ve `/root/.cache/eta-register/eta-register.log` (pkexec ile çalışan
+  kurulum adımı): son denetimin zamanı ve sonucu, denetim sayısı, son kayıt/
+  güncelleme, Ahenk kurulum ve servis başlatma sonucu.
+- **Eski Ahenk** — kurulu sürüm depodaki adaydan (`apt-cache policy ahenk`) eskiyse
+  **WARN**. `eta-unattended-upgrade` kurulu değilse otomatik güncelleme ETAP
+  paketlerini yükseltmez ve yeni Ahenk bu bağımlılığı istediğinden `apt-get
+  upgrade` onu geri tutar; çözüm `sudo apt install ahenk` ya da `apt full-upgrade`.
+  ETAP deposu tanımlı değilse ayrıca uyarılır.
+
 Ayrıca Ahenk'i **yerelde sekteye uğratan** sorunlar:
 - **Servis crash-loop** — `NRestarts` sayısı. Sürekli yeniden başlıyorsa
   (≥3) başlangıçta ölüyor demektir (FAIL).
@@ -306,6 +331,9 @@ listelenir.
 | DNS sunucusu yok / ad çözülemiyor | 4 | **DNS** sorunu — broker adı IP'ye çevrilemez |
 | DNS/TCP/TLS başarısız, ağ geçidi yok | 4 | **Ağ/bağlantı** sorunu |
 | `registered=0` | 2 | Kayıt **hiç tamamlanmamış** |
+| Ahenk kurulu değil | 1 | **ETA Kayıt kurulumu yapmamış** — Düzenle → Kaydet |
+| Servis pasif ve logda kendini durdurma | 1 | **Ahenk kendini durdurmuş** — ağ/Pulsar sorunu sonrası |
+| Kurulu Ahenk < depodaki sürüm | 1 | **Eski Ahenk** — `apt install ahenk` |
 | Servis pasif / crash-loop, conf↔db uyuşmazlığı | 1–2 | **Yerel yazılım** sorunu |
 | Disk dolu, DB bütünlüğü bozuk | 1–2 | **Yerel kaynak** sorunu — DB/log yazımı bozulur |
 | Mevcut oturumda ImportError/Traceback | 1 | **Bağımlılık/başlangıç** çökmesi |
