@@ -574,6 +574,34 @@ def ahenk_repo_status(installed, online=True):
     res["unattended"] = (rc == 0 and "install ok installed" in st)
     return res
 
+def service_down_reason(D):
+    """1. adımdaki servis durumuna göre broker bağlantısı olmamasının nedeni.
+    Servis çalışıyorsa None."""
+    if D.get("ahenk_version") is None:
+        return "Ahenk kurulu değil"
+    active = D.get("service_active") or "?"
+    enabled = D.get("service_enabled") or "?"
+    if active == "active":
+        return None
+    if active == "failed":
+        why = "servis çökmüş (failed): Ahenk hata verip kapanmış"
+    elif D.get("self_stopped"):
+        why = ("Ahenk kendini durdurmuş (stop): Pulsar/kayıt denemeleri tükenince "
+               "'systemctl stop' ile kapanmış, systemd yeniden başlatmaz")
+    else:
+        why = "servis çalışmıyor (%s)" % active
+    if enabled == "masked":
+        why += "; servis maskelenmiş (masked): hiçbir şekilde başlatılamaz, " \
+               "'sudo systemctl unmask ahenk.service' gerekir"
+    elif enabled == "disabled":
+        why += "; servis devre dışı (disabled): açılışta da başlamaz, yeniden " \
+               "başlatma çözmez — 'sudo systemctl enable --now ahenk.service' gerekir"
+    elif enabled == "enabled":
+        why += "; servis etkin (enabled): sonraki açılışta başlar, hemen başlatmak " \
+               "için 'sudo systemctl start ahenk.service'"
+    return "1. adım: %s/%s — %s" % (active, enabled, why)
+
+
 # ----------------------------------------------------------------------------
 # Ağ / bağlantı testleri
 # ----------------------------------------------------------------------------
@@ -1783,11 +1811,14 @@ def main():
         R.line("Canlı broker bağlantısı", "%d ESTABLISHED → %s%s" %
                (live["count"], peers, owner), OK)
     else:
-        detail = "yok"
-        if live["error"]:
+        detail = "Broker'a aktif bir bağlantı yok"
+        reason = service_down_reason(D)
+        if reason:
+            detail += " (%s)" % reason
+        elif live["error"]:
             detail += " (%s)" % live["error"]
         sev = WARN if not live["host"] else FAIL
-        R.line("Canlı broker bağlantısı", detail, sev)
+        R.line(None, detail, sev)
 
     # Bağlantı CANLI mı? (çoklu kanıt)
     conn_live = (live["count"] > 0) or \
