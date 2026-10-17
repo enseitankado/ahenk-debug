@@ -505,8 +505,11 @@ def version_lt(a, b):
     return rc == 0
 
 
-def published_ahenk_version(timeout=15):
-    """ETAP deposunun yayındaki paket dizininden en son Ahenk sürümü.
+_PKG_INDEX_CACHE = {}
+
+
+def published_version(package, timeout=15):
+    """ETAP deposunun yayındaki paket dizininden paketin en son sürümü.
     Dönüş: (sürüm|None, kaynak URL|None, hata|None)."""
     osrel = read_file("/etc/os-release") or ""
     # ETAP: VERSION_CODENAME=etap-yirmiuc, PARDUS_CODENAME=yirmiuc; depo dizini 'yirmiuc'
@@ -520,29 +523,33 @@ def published_ahenk_version(timeout=15):
     err = None
     for suite, comp in [(su, co) for su in suites for co in ("contrib", "main")]:
         url = "%s/dists/%s/%s/binary-amd64/Packages.gz" % (ETAP_REPO_BASE, suite, comp)
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as r:
-                text = gzip.decompress(r.read()).decode("utf-8", "replace")
-        except Exception as e:
-            err = "%s: %s" % (type(e).__name__, e)
+        if url not in _PKG_INDEX_CACHE:
+            try:
+                with urllib.request.urlopen(url, timeout=timeout) as r:
+                    _PKG_INDEX_CACHE[url] = gzip.decompress(r.read()).decode("utf-8", "replace")
+            except Exception as e:
+                _PKG_INDEX_CACHE[url] = None
+                err = "%s: %s" % (type(e).__name__, e)
+        text = _PKG_INDEX_CACHE[url]
+        if not text:
             continue
         latest = None
         for blk in text.split("\n\n"):
-            if re.search(r"^Package: ahenk$", blk, re.M):
+            if re.search(r"^Package: %s$" % re.escape(package), blk, re.M):
                 v = re.search(r"^Version: (\S+)", blk, re.M)
                 if v and (latest is None or version_lt(latest, v.group(1))):
                     latest = v.group(1)
         if latest:
             return latest, url, None
-    return None, None, err or "Ahenk paket dizininde bulunamadı"
+    return None, None, err or "%s paket dizininde bulunamadı" % package
 
 
-def ahenk_repo_status(installed, online=True):
-    """Kurulu Ahenk; yayındaki en son sürüm ve yerel apt adayıyla karşılaştırılır."""
+def package_repo_status(package, installed, online=True):
+    """Kurulu paket; yayındaki en son sürüm ve yerel apt adayıyla karşılaştırılır."""
     res = {"candidate": None, "published": None, "published_url": None,
            "published_error": None, "latest": None, "outdated": None,
-           "lists_stale": None, "etap_repo": None, "unattended": None}
-    rc, out, _ = run("LC_ALL=C apt-cache policy ahenk")
+           "lists_stale": None, "etap_repo": None}
+    rc, out, _ = run("LC_ALL=C apt-cache policy %s" % package)
     if rc == 0:
         m = re.search(r"Candidate:\s*(\S+)", out)
         if m and m.group(1) != "(none)":
@@ -550,13 +557,19 @@ def ahenk_repo_status(installed, online=True):
         res["etap_repo"] = "depo.etap.org.tr/etap" in out
     if online:
         res["published"], res["published_url"], res["published_error"] = \
-            published_ahenk_version()
+            published_version(package)
     # Ölçüt: yayındaki en son sürüm; alınamazsa yerel apt adayı
     res["latest"] = res["published"] or res["candidate"]
     if res["published"] and res["candidate"]:
         res["lists_stale"] = version_lt(res["candidate"], res["published"])
     if installed and res["latest"]:
         res["outdated"] = installed != res["latest"] and version_lt(installed, res["latest"])
+    return res
+
+
+def ahenk_repo_status(installed, online=True):
+    """Ahenk için package_repo_status + eta-unattended-upgrade durumu."""
+    res = package_repo_status("ahenk", installed, online)
     rc, st, _ = run("dpkg-query -W -f='${Status}' eta-unattended-upgrade")
     res["unattended"] = (rc == 0 and "install ok installed" in st)
     return res
@@ -1461,6 +1474,40 @@ def main():
                           "listesine göredir."))
         else:
             R.line("Ahenk sürümü", "güncel (%s en son sürüm: %s)" % (ref, repo["latest"]), OK)
+
+    # eta-register (ETA Kayıt): Ahenk'i kuran/başlatan uygulama — en son sürüm mü?
+    rc, erv, _ = run("dpkg-query -W -f='${Version}' eta-register")
+    er_installed = erv if rc == 0 and erv else None
+    er = package_repo_status("eta-register", er_installed, online=not args.no_net)
+    er["installed"] = er_installed
+    D["eta_register_repo"] = er
+    if not er_installed:
+        R.line("ETA Kayıt (eta-register)", "KURULU DEĞİL", WARN)
+        R.finding(WARN, "ETA Kayıt (eta-register) kurulu değil",
+                  "Ahenk'i tahtaya kuran ve kayıt sonrası servisi başlatan uygulama "
+                  "ETA Kayıt'tır; kurulu değilse Ahenk kurulumu/yeniden başlatması "
+                  "kendiliğinden olmaz.\nÇÖZÜM: sudo apt update && sudo apt install "
+                  "eta-register")
+    elif er["latest"]:
+        ref = "yayındaki" if er["published"] else "yerel apt listesindeki"
+        if er["outdated"]:
+            R.line("ETA Kayıt sürümü", "ESKİ (kurulu %s < %s en son %s)" %
+                   (er_installed, ref, er["latest"]), WARN)
+            R.finding(WARN, "ETA Kayıt en son sürüm değil (kurulu %s, en son %s)" %
+                      (er_installed, er["latest"]),
+                      "Eski ETA Kayıt, Ahenk kurulum/kayıt akışındaki düzeltmeleri "
+                      "içermeyebilir.%s\nÇÖZÜM: sudo apt update && sudo apt install "
+                      "eta-register%s" % (
+                          " Yerel paket listesi de eski; önce 'apt update' gerekir."
+                          if er["lists_stale"] else "",
+                          "" if er["published"] else
+                          "\nNOT: Yayındaki sürüm alınamadı; karşılaştırma yerel paket "
+                          "listesine göredir."))
+        else:
+            R.line("ETA Kayıt sürümü", "güncel (%s en son sürüm: %s)" %
+                   (ref, er["latest"]), OK)
+    else:
+        R.line("ETA Kayıt sürümü", "%s (en son sürüm belirlenemedi)" % er_installed, INFO)
 
     rc, active, _ = run("systemctl is-active ahenk.service")
     rc2, enabled, _ = run("systemctl is-enabled ahenk.service")

@@ -152,6 +152,9 @@ başlatmaz). Bu yüzden:
   bağımlılığı istediğinden `apt-get upgrade` onu geri tutar; çözüm
   `sudo apt install ahenk` ya da `apt full-upgrade`. ETAP deposu tanımlı değilse
   ayrıca uyarılır.
+- **ETA Kayıt en son sürüm mü?** — `eta-register` de aynı şekilde yayındaki en son
+  sürümle karşılaştırılır; eskiyse **WARN** (çözüm `sudo apt install eta-register`),
+  kurulu değilse **WARN** (Ahenk'i kuran ve başlatan uygulama odur).
 
 Ayrıca Ahenk'i **yerelde sekteye uğratan** sorunlar:
 - **Servis crash-loop** — `NRestarts` sayısı. Sürekli yeniden başlıyorsa
@@ -339,6 +342,7 @@ listelenir.
 | Ahenk kurulu değil | 1 | **ETA Kayıt kurulumu yapmamış** — Düzenle → Kaydet |
 | Servis pasif ve logda kendini durdurma | 1 | **Ahenk kendini durdurmuş** — ağ/Pulsar sorunu sonrası |
 | Kurulu Ahenk < yayındaki en son sürüm | 1 | **Eski Ahenk** — `apt install ahenk` |
+| Kurulu eta-register < yayındaki en son sürüm | 1 | **Eski ETA Kayıt** — `apt install eta-register` |
 | Servis pasif / crash-loop, conf↔db uyuşmazlığı | 1–2 | **Yerel yazılım** sorunu |
 | Disk dolu, DB bütünlüğü bozuk | 1–2 | **Yerel kaynak** sorunu — DB/log yazımı bozulur |
 | Mevcut oturumda ImportError/Traceback | 1 | **Bağımlılık/başlangıç** çökmesi |
