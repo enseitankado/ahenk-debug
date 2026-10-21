@@ -164,12 +164,27 @@ Ayrıca Ahenk'i **yerelde sekteye uğratan** sorunlar:
 - **Mevcut oturum hataları** — servisin son başlangıcından (ActiveEnter) bu yana
   loglardaki ERROR/Traceback/ImportError satırları (ConsumerBusy hariç). Başlangıç/
   bağımlılık çökmesi varsa FAIL.
+- **Lider kayıt isteği hataları** — Ahenk'in `/register` isteği HTTP hata kodu, zaman
+  aşımı ya da bağlantı hatası almışsa ayrı bir **FAIL** bulgusu verilir. HTTP 5xx
+  **sunucu tarafı** hatasıdır: ETA Kayıt → Düzenle → Kaydet yalnızca yeni UUID ile
+  yeni bir deneme başlatır, sonucu değiştirmez. Bulgu operatöre iletilecek bilgileri
+  (MAC, board_id, okul kodu, hostname, son deneme saati) içerir. Ahenk bu yüzden
+  kendini durdurmuşsa "kendini durdurmuş" bulgusu da nedeni bu olarak gösterir.
+- **Kayıt öncesi beklenen sertifika hatası** — `messaging.conf`'taki sertifika yolu
+  (`tls_trust_certs_file_path`) kayıt başarılı olunca Lider'in yanıtıyla yazılır.
+  Yol boşken Ahenk açılışta indirdiği sertifikayı `open('')` ile yazmaya çalışır ve
+  `FileNotFoundError` alır. Bu satır hata sayısına katılmaz, "kayıt öncesi BEKLENEN
+  hata" diye ayrıca gösterilir.
 
 ### 2) Kimlik (UUID / Parola / Kayıt)
 DB'deki UUID (jid), parola (maskeli), `registered` bayrağı, kayıt zaman damgası,
 **DB bütünlük kontrolü** (`PRAGMA integrity_check` — bozuk/kilitli DB Ahenk'i
 durdurur). Root ile: **`ahenk.conf` UID/parola ile DB'nin tutarlılığı** ve Pulsar
 topic/abonelik adları.
+
+Kayıt tamamlanmamışken `ahenk.conf`'taki UID ve `messaging.conf`'taki Pulsar
+adresi boştur (ikisi de kayıt yanıtıyla yazılır); bu durumda UID/DB karşılaştırması
+ve Pulsar adres kontrolleri hata vermez, "kayıt tamamlanınca yazılır" diye bilgi verir.
 
 **Kayıt durumu** (`registered` bayrağına göre):
 - `registered=1` → kayıtlı → **OK**.
@@ -236,11 +251,31 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
    sürecinin broker'a (Pulsar `6650/6651`, XMPP `5222/5223`) o anki
    **ESTABLISHED** bağlantıları sayılır. Varsa, makine komut topic'ine bağlı
    demektir. Bu kontrol yereldir, `--no-net` ile bile çalışır.
-4. **Aktif Pulsar testi** — Ahenk'in açılışta yaptığı bağlantı testini birebir
-   yapar: **gerçek uid/parola** ile broker'a bağlanıp `test-topic-lider`'e bir
-   test mesajı yollar. Böylece DNS + TCP + TLS + **kimlik doğrulamanın** o an
-   çalıştığı kanıtlanır. Komut aboneliğine (`ahenk-<uid>`) **dokunmaz**,
-   dolayısıyla çalışan Ahenk'i etkilemez. (`--no-net` ile atlanır.)
+4. **Aktif Pulsar testi** — Ahenk'in açılışta yaptığı bağlantı sınamasını
+   **gerçek uid/parola** ile yapar ve **her adımın süresini ayrı ölçer**:
+
+   | Adım | Katman | Ne sınanır |
+   |---|---|---|
+   | TCP bağlantısı | ağ | broker portuna erişim (güvenlik duvarı, yönlendirme) |
+   | TLS el sıkışma | ağ | şifreli bağlantı, sertifika |
+   | Kimlik doğrulama | uygulama | Pulsar sunucusunun tahtanın uid/parolasını kabul etmesi |
+   | Topic arama | uygulama | proxy'nin `test-topic-lider`'i iç broker'a yönlendirmesi |
+   | Producer açma | uygulama | sunucunun topic'i yükleyip yazıcı açması |
+   | Mesaj gönderme + onay | uygulama | mesajın kalıcı depoya yazılıp onaylanması |
+
+   Rapordaki **Katman** satırı sonucu açıkça yazar: TCP/TLS başarısızsa sorun **ağ
+   katmanındadır**; TCP ve TLS başarılı olup sonraki bir adım hata/zaman aşımı
+   veriyorsa ağ sağlamdır ve sorun **uygulama katmanında (Pulsar sunucusu
+   tarafında)**, adı verilen adımdadır. Başarılı ama 5 sn'yi aşan adımlar **YAVAŞ**
+   (WARN) işaretlenir. Kimlik doğrulama ile topic arama, oturum iki kez açılarak
+   ayrılır; süre istemci günlüğündeki "Connected to broker" anından ölçülür.
+   Her adım en çok **60 sn** bekler (Ahenk 120 sn bağlanma / 300 sn işlem bekler).
+   Sunucu oturum isteğini protokol düzeyinde `ERROR` ile reddederse (kütüphane
+   bunu yalnızca `ConnectError` diye bildirir) **kimlik reddi** olarak raporlanır.
+   Ahenk'in kendi bağlantısı canlıyken test başarısız olursa bulgu **WARN**'dur
+   (sunucunun o anki yavaşlığı). Kayıt tamamlanmamışsa tahtanın Pulsar kimliği
+   olmadığından test atlanır. Komut aboneliğine (`ahenk-<uid>`) **dokunmaz**,
+   çalışan Ahenk'i etkilemez. (`--no-net` ile atlanır.)
 
 **Karar tablosu:**
 
@@ -340,6 +375,9 @@ listelenir.
 | DNS/TCP/TLS başarısız, ağ geçidi yok | 4 | **Ağ/bağlantı** sorunu |
 | `registered=0` | 2 | Kayıt **hiç tamamlanmamış** |
 | Ahenk kurulu değil | 1 | **ETA Kayıt kurulumu yapmamış** — Düzenle → Kaydet |
+| Ahenk kayıt isteği HTTP 5xx alıyor | 2 | **Lider kayıt sunucusu hatası** — sunucu tarafı; Düzenle → Kaydet çözmez, operatöre bildirin (rapor MAC/board_id/saat verir) |
+| Aktif test: TCP/TLS başarılı, sonraki adım hata/zaman aşımı | 3 | **Uygulama katmanı** (Pulsar sunucusu) — ağ sağlam |
+| Aktif test: sunucu oturumu reddediyor | 3 | **Kimlik reddi** — uid/parola Pulsar'da geçersiz (silinmiş kayıt/klon) |
 | Servis pasif ve logda kendini durdurma | 1 | **Ahenk kendini durdurmuş** — ağ/Pulsar sorunu sonrası |
 | Kurulu Ahenk < yayındaki en son sürüm | 1 | **Eski Ahenk** — `apt install ahenk` |
 | Kurulu eta-register < yayındaki en son sürüm | 1 | **Eski ETA Kayıt** — `apt install eta-register` |

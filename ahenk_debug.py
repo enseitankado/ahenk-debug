@@ -748,9 +748,11 @@ def service_result():
     return out.strip() if rc == 0 else None
 
 
-def scan_session_errors(srv_start, max_samples=4):
-    """Mevcut servis oturumunda (srv_start sonrası) ölümcül/başlangıç hatalarını tara."""
-    out = {"available": False, "count": 0, "samples": []}
+def scan_session_errors(srv_start, max_samples=4, cert_path_empty=False):
+    """Mevcut servis oturumunda (srv_start sonrası) ölümcül/başlangıç hatalarını tara.
+    cert_path_empty: messaging.conf'ta sertifika yolu boşsa (kayıt tamamlanmamış)
+    Ahenk'in açılıştaki sertifika indirme hatası beklenen hata olarak ayrı sayılır."""
+    out = {"available": False, "count": 0, "samples": [], "expected": 0}
     text = read_file("/var/log/ahenk.log")
     if not text:
         return out
@@ -764,11 +766,56 @@ def scan_session_errors(srv_start, max_samples=4):
         dt = parse_log_ts(ln)
         if srv_start and dt and dt < srv_start:
             continue
+        if cert_path_empty and "Error during certificate download" in ln:
+            out["expected"] += 1
+            continue
+        if ("registration.py" in ln or "REGISTRATION" in ln) and REG_ERR_RE.search(ln):
+            out["registration"] = out.get("registration", 0) + 1
+            continue
         out["count"] += 1
         if len(out["samples"]) < max_samples:
             s = ln.strip()
             s = re.sub(r"^format=", "", s)        # logger önekini temizle
             out["samples"].append(s[:170])
+    return out
+
+
+REG_ERR_RE = re.compile(
+    r"HTTP error occurred: (\d{3})|HTTP connection error occurred|The request timed out")
+
+
+def registration_request_errors(srv_start):
+    """Ahenk'in Lider'e kayıt isteğindeki (/register) hatalar — mevcut servis
+    oturumunda (srv_start sonrası). HTTP kodları, son zaman ve URL."""
+    out = {"count": 0, "codes": [], "last": None, "last_dt": None, "url": None,
+           "kinds": []}
+    texts = [read_file(lf) or "" for lf in sorted(
+        [l for l in LOG_FILES if os.access(l, os.R_OK)], key=os.path.getmtime)]
+    for ln in "\n".join(texts).splitlines():
+        if "registration.py" not in ln and "REGISTRATION" not in ln:
+            continue
+        m = REG_ERR_RE.search(ln)
+        if not m:
+            continue
+        dt = parse_log_ts(ln)
+        if srv_start and dt and dt < srv_start:
+            continue
+        out["count"] += 1
+        if m.group(1):
+            out["codes"].append(m.group(1))
+            kind = "HTTP %s" % m.group(1)
+        elif "timed out" in m.group(0):
+            kind = "zaman aşımı"
+        else:
+            kind = "bağlantı hatası"
+        if kind not in out["kinds"]:
+            out["kinds"].append(kind)
+        u = re.search(r"for url: (\S+?)[,\s]", ln + " ")
+        if u:
+            out["url"] = u.group(1)
+        ts = LOG_TS_RE.search(ln)
+        out["last"] = ts.group(1) if ts else out["last"]
+        out["last_dt"] = dt or out["last_dt"]
     return out
 
 
@@ -879,16 +926,35 @@ def live_broker_connections(cp):
     return res
 
 
-def active_pulsar_probe(cp, timeout=20):
+PROBE_TIMEOUT = 60  # sn; Ahenk 120 sn bağlanma / 300 sn işlem bekler
+PROBE_SLOW = 5      # sn; başarılı ama bu süreyi aşan adım "yavaş" (WARN) işaretlenir
+
+# Testin adımları: (anahtar, rapor adı, katman)
+PROBE_STAGES = [
+    ("tcp", "TCP bağlantısı", "ağ"),
+    ("tls", "TLS el sıkışma", "ağ"),
+    ("auth", "Kimlik doğrulama (Pulsar oturumu)", "uygulama"),
+    ("lookup", "Topic arama (proxy → iç broker)", "uygulama"),
+    ("producer", "Producer açma", "uygulama"),
+    ("send", "Mesaj gönderme + onay", "uygulama"),
+]
+
+
+def active_pulsar_probe(cp, timeout=PROBE_TIMEOUT, registered=None):
     """
-    AKTİF DOĞRULAMA (varsayılan, --no-net dışında). Ahenk'in connect() öz-testini taklit
-    eder: gerçek uid/parola ile broker'a bağlanıp TEST_TOPIC'e bir producer açar
-    ve test mesajı yollar. Böylece DNS+TCP+TLS+KİMLİK DOĞRULAMA'nın ŞU AN
-    çalıştığı kanıtlanır. Exclusive komut aboneliğine (ahenk-<uid>) DOKUNMAZ,
-    dolayısıyla çalışan Ahenk'i bozmaz.
+    AKTİF DOĞRULAMA (varsayılan, --no-net dışında). Ahenk'in connect() öz-testini
+    taklit eder ve her adımın süresini ayrı ölçer:
+      1) TCP  2) TLS  — ağ katmanı (kendi soketimizle)
+      3) kimlik doğrulama  4) topic arama  5) producer  6) gönderim — uygulama
+         katmanı (Pulsar sunucusu). 3 ve 4, get_topic_partitions iki kez
+         çağrılarak ayrılır: ilk çağrı oturum açar (TCP+TLS+kimlik+arama),
+         ikincisi açık oturumu yeniden kullanır (yalnızca arama).
+    Gerçek uid/parola kullanılır; Exclusive komut aboneliğine (ahenk-<uid>)
+    DOKUNMAZ, dolayısıyla çalışan Ahenk'i bozmaz.
     """
     res = {"attempted": True, "ok": False, "auth_ok": None, "stage": None,
-           "error": None, "skipped": False}
+           "error": None, "skipped": False, "timings": {}, "failed_stage": None,
+           "timeout": timeout}
     uid = cfg(cp, "CONNECTION", "uid")
     password = cfg(cp, "CONNECTION", "password")
     host = cfg(cp, "PULSAR", "pulsar_host")
@@ -898,7 +964,13 @@ def active_pulsar_probe(cp, timeout=20):
     if not (uid and password and host and port):
         res["attempted"] = False
         res["skipped"] = True
-        res["error"] = "uid/parola/host/port okunamadı (root gerekli)"
+        if str(registered) != "1":
+            res["error"] = ("kayıt tamamlanmadığı için tahtanın Pulsar kimliği ve sunucu "
+                            "adresi henüz yok (ahenk.conf / messaging.conf kayıt "
+                            "yanıtıyla yazılır)")
+        else:
+            res["error"] = ("ahenk.conf / messaging.conf içinde uid, parola ya da Pulsar "
+                            "sunucu adresi eksik")
         return res
     # Bundled pulsar istemci kütüphanesini ekle
     lib = "/usr/share/ahenk/base/messaging/pulsar/pulsar_client_libs"
@@ -909,37 +981,139 @@ def active_pulsar_probe(cp, timeout=20):
     except Exception as e:
         res["error"] = "pulsar kütüphanesi yüklenemedi: %s" % e
         return res
+
+    T = res["timings"]
+    ip = dns_resolve(host) or host
+
+    def fail(stage, err):
+        res["stage"] = res["failed_stage"] = stage
+        res["error"] = err
+        if re.search(r"auth|Authoriz|Authentic|Unauthorized|permission", err, re.I):
+            res["auth_ok"] = False
+        return res
+
+    # 1) TCP
+    t0 = time.monotonic()
+    ok, err = tcp_check(ip, port, timeout=min(timeout, 15))
+    T["tcp"] = time.monotonic() - t0
+    if not ok:
+        return fail("tcp", err)
+    # 2) TLS
+    if use_tls:
+        t0 = time.monotonic()
+        ok, err, _ = tls_check(ip, port, ca, timeout=min(timeout, 15))
+        T["tls"] = time.monotonic() - t0
+        if not ok:
+            return fail("tls", err)
+
+    # İstemcinin C++ günlüklerini ekrana basma; zaman damgasıyla yakala. Hem ekran
+    # kalabalığını önler hem de "Connected to broker" anı ve sunucunun ERROR yanıtı
+    # gibi adım ayrıntılarını verir.
+    import logging
+    plog_msgs = []
+
+    class _Cap(logging.Handler):
+        def emit(self, rec):
+            try:
+                plog_msgs.append((time.monotonic(), rec.getMessage()))
+            except Exception:
+                pass
+    plog = logging.getLogger("ahenk-debug.pulsar")
+    plog.propagate = False
+    plog.setLevel(logging.DEBUG)
+    plog.handlers[:] = [_Cap()]
+
+    def log_time(needle, since):
+        for t, m in plog_msgs:
+            if t >= since and needle in m:
+                return t
+        return None
     client = None
+    topic = "test-topic-lider"
     try:
-        res["stage"] = "connect"
-        ip = dns_resolve(host) or host
-        scheme = "pulsar+ssl" if use_tls else "pulsar"
-        url = "%s://%s:%s" % (scheme, ip, port)
         kwargs = dict(
-            service_url=url,
+            service_url="%s://%s:%s" % ("pulsar+ssl" if use_tls else "pulsar", ip, port),
             authentication=pulsar.AuthenticationBasic(uid, password, "customAuth"),
             connection_timeout_ms=int(timeout * 1000),
             operation_timeout_seconds=timeout,
+            logger=plog,
         )
         if use_tls:
             kwargs.update(use_tls=True, tls_allow_insecure_connection=False,
                           tls_validate_hostname=False)
             if ca:
                 kwargs["tls_trust_certs_file_path"] = ca
-        client = pulsar.Client(**kwargs)
-        res["stage"] = "producer(test-topic-lider)"
-        prod = client.create_producer("test-topic-lider")
-        prod.send(b"ahenk-debug probe")
-        prod.close()
-        res["ok"] = True
+        try:
+            client = pulsar.Client(**kwargs)
+        except TypeError:  # eski istemci: logger parametresi yok
+            kwargs.pop("logger", None)
+            client = pulsar.Client(**kwargs)
+
+        # 3) oturum: TCP+TLS+kimlik doğrulama+arama
+        res["stage"] = "auth"
+        t0 = time.monotonic()
+        try:
+            client.get_topic_partitions(topic)
+        except Exception as e:
+            t_conn = log_time("Connected to broker", t0)
+            T["auth"] = time.monotonic() - (t_conn or t0)
+            fail("auth", str(e))
+            # TCP+TLS kuruldu, sunucu oturum isteğine (CONNECT) ERROR komutuyla yanıt
+            # verip bağlantıyı kapattı → oturum/kimlik reddi (kütüphane ConnectError der)
+            if t_conn and log_time("incoming command: ERROR", t_conn):
+                res["auth_ok"] = False
+                res["server_rejected"] = True
+                res["error"] = ("sunucu oturum isteğini (CONNECT) ERROR yanıtıyla reddetti "
+                                "ve bağlantıyı kapattı (%s)" % e)
+            return res
+        first = time.monotonic() - t0
+        t_first0 = t0
+        t_conn = log_time("Connected to broker", t0)
+        # 4) arama: açık oturum yeniden kullanılır
+        res["stage"] = "lookup"
+        t0 = time.monotonic()
+        try:
+            client.get_topic_partitions(topic)
+        except Exception as e:
+            T["lookup"] = time.monotonic() - t0
+            return fail("lookup", str(e))
+        T["lookup"] = time.monotonic() - t0
+        # kimlik doğrulama: ilk oturumda "Connected to broker" (istemcinin TCP+TLS'i
+        # bitti) anından oturum bitişine kadar geçen süre − arama süresi. Günlük
+        # yoksa tahmin: ilk oturum − (TCP + TLS + arama).
+        if t_conn:
+            T["auth"] = max(0.0, (t_first0 + first - t_conn) - T["lookup"])
+            res["auth_measured"] = True
+        else:
+            T["auth"] = max(0.0, first - T["lookup"] - T.get("tcp", 0) - T.get("tls", 0))
+            res["auth_measured"] = False
         res["auth_ok"] = True
+        # 5) producer
+        res["stage"] = "producer"
+        t0 = time.monotonic()
+        try:
+            prod = client.create_producer(topic)
+        except Exception as e:
+            T["producer"] = time.monotonic() - t0
+            return fail("producer", str(e))
+        T["producer"] = time.monotonic() - t0
+        # 6) gönderim + onay
+        res["stage"] = "send"
+        t0 = time.monotonic()
+        try:
+            prod.send(b"ahenk-debug probe")
+        except Exception as e:
+            T["send"] = time.monotonic() - t0
+            return fail("send", str(e))
+        T["send"] = time.monotonic() - t0
+        try:
+            prod.close()
+        except Exception:
+            pass
+        res["ok"] = True
         res["stage"] = "done"
     except Exception as e:
-        msg = str(e)
-        res["error"] = msg
-        # Yetkilendirme/kimlik hatalarını ayırt et
-        if re.search(r"auth|Authoriz|Authentic|Unauthorized|permission", msg, re.I):
-            res["auth_ok"] = False
+        return fail(res["stage"] or "connect", str(e))
     finally:
         try:
             if client:
@@ -947,6 +1121,26 @@ def active_pulsar_probe(cp, timeout=20):
         except Exception:
             pass
     return res
+
+
+def fmt_secs(sec):
+    return "%.0f ms" % (sec * 1000) if sec < 1 else "%.1f sn" % sec
+
+
+def probe_layer_verdict(probe):
+    """Testin hangi katmanda takıldığını açıkça söyleyen cümle."""
+    st = probe.get("failed_stage")
+    if probe.get("ok"):
+        return ("TCP ve TLS başarılı (ağ katmanı sağlam); kimlik doğrulama, topic arama, "
+                "producer ve gönderim de başarılı (uygulama katmanı sağlam).")
+    if st in ("tcp", "tls"):
+        return ("%s başarısız: sorun AĞ KATMANINDA (güvenlik duvarı, yönlendirme, "
+                "sertifika/protokol) — Pulsar uygulamasına hiç ulaşılamadı."
+                % ("TCP" if st == "tcp" else "TLS"))
+    name = dict((k, n) for k, n, _ in PROBE_STAGES).get(st, st)
+    return ("TCP ve TLS başarılı → ağ katmanı sağlam. Hata/zaman aşımı UYGULAMA "
+            "KATMANINDA: %s adımında (Pulsar sunucusu tarafı). Tahtanın ağıyla "
+            "ilgili değildir." % name)
 
 
 # ----------------------------------------------------------------------------
@@ -1537,6 +1731,8 @@ def main():
     else:
         R.line("ETA Kayıt sürümü", "%s (en son sürüm belirlenemedi)" % er_installed, INFO)
 
+    reg_err = registration_request_errors(srv_start)
+    D["registration_errors"] = reg_err
     rc, active, _ = run("systemctl is-active ahenk.service")
     rc2, enabled, _ = run("systemctl is-enabled ahenk.service")
     D["service_active"] = active
@@ -1547,7 +1743,18 @@ def main():
         st = logs["stopping"]
         self_stopped = logs["available"] and st["count"] > 0
         D["self_stopped"] = self_stopped
-        if self_stopped:
+        if self_stopped and reg_err["count"]:
+            R.line("Kendini durdurma (log)", "son: %s" % st["last"], FAIL)
+            R.finding(FAIL, "Ahenk kendini durdurmuş — Lider kayıt isteği başarısız (%s)" %
+                      ", ".join(reg_err["kinds"]),
+                      "Ahenk açılışta Lider'e kayıt isteği gönderdi; istek %d kez başarısız "
+                      "oldu (%s, son: %s), denemeler tükenince Ahenk kendini durdurdu.\n"
+                      "Ayrıntı ve operatöre iletilecek bilgiler: 'Lider kayıt sunucusu' "
+                      "bulgusu.\nNOT: ETA Kayıt → Düzenle → Kaydet yalnızca yeni bir kayıt "
+                      "denemesi başlatır (her seferinde yeni UUID üretilir); sunucu hata "
+                      "verdiği sürece sonuç değişmez." % (
+                          reg_err["count"], ", ".join(reg_err["kinds"]), reg_err["last"]))
+        elif self_stopped:
             R.line("Kendini durdurma (log)", "son: %s" % st["last"], FAIL)
             R.finding(FAIL, "Ahenk kendini durdurmuş — servis çalışmıyor",
                       "Ahenk, Pulsar'a bağlanamayınca ya da kayıt denemeleri tükenince "
@@ -1631,9 +1838,17 @@ def main():
     D["disk"] = {p: disk_usage_info(p) for p in ("/", "/var")}
 
     # Mevcut servis oturumundaki hatalar (başlangıç/ölümcül)
-    sess_err = scan_session_errors(srv_start)
+    cert_path_empty = not (cfg(cp, "PULSAR", "tls_trust_certs_file_path") or "").strip()
+    sess_err = scan_session_errors(srv_start, cert_path_empty=cert_path_empty)
     D["session_errors"] = sess_err
     if sess_err["available"]:
+        if sess_err["expected"]:
+            R.line("Sertifika indirme hatası", "%d kez — kayıt öncesi BEKLENEN hata" %
+                   sess_err["expected"], INFO)
+            R.note("messaging.conf'taki sertifika yolu (tls_trust_certs_file_path) kayıt "
+                   "başarılı olunca Lider'in yanıtıyla doldurulur. Yol boşken Ahenk "
+                   "indirdiği sertifikayı open('') ile yazmaya çalışır ve FileNotFoundError "
+                   "alır. Kaydın tamamlanmamasının sonucudur, nedeni değildir.")
         if sess_err["count"] == 0:
             R.line("Mevcut oturum hataları", "yok (ConsumerBusy hariç)", OK)
         else:
@@ -1691,7 +1906,10 @@ def main():
         R.line("LDAP dn", dn or "(boş — LDAP kullanılmıyor, denetlenmez)", INFO)
         if not registered_flag:
             R.line("Kayıt türü", "kayıt tamamlanmamış (registered=0)", FAIL)
+            rerr = D.get("registration_errors") or {}
             R.finding(FAIL, "Kayıt tamamlanmamış (registered=0)",
+                      ("Neden: Lider kayıt isteği başarısız (%s) — 'Lider kayıt sunucusu' "
+                       "bulgusuna bakın." % ", ".join(rerr["kinds"])) if rerr.get("count") else
                       "Tahta Lider'e hiç kaydolamamış olabilir; kayıt akışını "
                       "(ağ + Lider yanıtı) inceleyin.")
         R.line("Kayıt zamanı", db_reg["timestamp"], INFO)
@@ -1700,7 +1918,10 @@ def main():
                FAIL if root else WARN)
 
     # conf <-> db tutarlılığı
-    if root and conf_uid is not None and db_reg:
+    if root and conf_uid is not None and db_reg and not conf_uid.strip() \
+            and str(db_reg["registered"]) != "1":
+        R.line("conf.uid", "boş — kayıt tamamlanınca yazılır (beklenen)", INFO)
+    elif root and conf_uid is not None and db_reg:
         if conf_uid != db_reg["jid"]:
             R.line("conf.uid vs db.jid", "UYUŞMUYOR", FAIL)
             R.finding(FAIL, "ahenk.conf UID ile DB JID farklı",
@@ -1880,27 +2101,61 @@ def main():
     elif _mtype != "pulsar":
         R.line("Aktif bağlantı testi", "yalnız Pulsar için geçerli (messenger=%s)" % _mtype, INFO)
     else:
-        R.line("Aktif Pulsar testi", "deneniyor (test-topic-lider'e producer)...", INFO)
-        probe = active_pulsar_probe(cp)
+        R.line("Aktif Pulsar testi", "deneniyor (adım başına en çok %d sn)..." %
+               PROBE_TIMEOUT, INFO)
+        probe = active_pulsar_probe(cp, registered=D.get("registered"))
         D["active_probe"] = probe
         if probe.get("skipped"):
-            R.line("Aktif probe sonucu", "ATLANDI: %s" % probe["error"], WARN)
-        elif probe["ok"]:
-            R.line("Aktif probe sonucu", "BAŞARILI — broker+TLS+kimlik doğrulama çalışıyor", OK)
-            R.finding(OK, "Aktif bağlantı testi başarılı",
-                      "Gerçek uid/parola ile broker'a bağlanıldı ve test mesajı "
-                      "yollandı. DNS/TCP/TLS/kimlik doğrulama şu an sağlıklı. "
-                      "(Komut aboneliğine dokunulmadı.)")
+            R.line("Aktif test", "ATLANDI: %s" % probe["error"],
+                   INFO if str(D.get("registered")) != "1" else WARN)
         else:
-            sev = FAIL
-            extra = ""
-            if probe["auth_ok"] is False:
-                extra = "KİMLİK DOĞRULAMA reddedildi — uid/parola Lider/broker'da geçersiz. "
-            R.line("Aktif probe sonucu", "BAŞARISIZ (%s): %s" %
-                   (probe.get("stage"), probe["error"]), sev)
-            R.finding(sev, "Aktif bağlantı testi başarısız",
-                      "%sAşama: %s\nHata: %s" %
-                      (extra, probe.get("stage"), probe["error"]))
+            # Adım adım süreler
+            T = probe.get("timings", {})
+            for key, name, layer in PROBE_STAGES:
+                if key == probe.get("failed_stage"):
+                    R.line("  %s" % name, "BAŞARISIZ (%s sonra): %s" % (
+                        fmt_secs(T.get(key, 0)), probe["error"]), FAIL)
+                    break
+                if key in T:
+                    note = " (tahmini)" if key == "auth" and \
+                        not probe.get("auth_measured") else ""
+                    slow = T[key] >= PROBE_SLOW
+                    R.line("  %s" % name, "%s%s%s" % (
+                        fmt_secs(T[key]), note,
+                        " — YAVAŞ (≥%d sn; sunucu tarafı)" % PROBE_SLOW if slow else ""),
+                        WARN if slow else OK)
+            verdict = probe_layer_verdict(probe)
+            R.line("Katman", verdict, OK if probe["ok"] else
+                   (FAIL if probe.get("failed_stage") in ("tcp", "tls") else WARN))
+            if probe["ok"]:
+                R.finding(OK, "Aktif bağlantı testi başarılı",
+                          "Gerçek uid/parola ile broker'a bağlanıldı ve test mesajı "
+                          "yollandı. %s (Komut aboneliğine dokunulmadı.)" % verdict)
+            else:
+                st = probe.get("failed_stage")
+                timeout_hit = bool(re.search(r"time ?out", probe["error"] or "", re.I))
+                if probe["auth_ok"] is False:
+                    sev, title = FAIL, "Aktif test: Pulsar sunucusu oturumu REDDETTİ"
+                    extra = ("TCP ve TLS kuruldu ama sunucu tahtanın oturum isteğini "
+                             "(uid/parola ile CONNECT) hemen reddetti. En olası neden: "
+                             "tahtanın uid/parolası Pulsar sunucusunda geçersiz (Lider'de "
+                             "silinmiş/değişmiş kayıt ya da klon imajdan gelen eski "
+                             "kimlik). Sunucu reddin nedenini bildirmez. ")
+                elif conn_live and st not in ("tcp", "tls"):
+                    sev, title = WARN, "Aktif test başarısız ama Ahenk şu an bağlı"
+                    extra = ("Ahenk'in kendi bağlantısı canlı (yukarıda); test sunucunun o "
+                             "anki yavaşlığını/hatasını gösteriyor. Ahenk aynı işlemde 300 "
+                             "sn bekler, test %d sn. " % probe.get("timeout", PROBE_TIMEOUT))
+                else:
+                    sev, title = FAIL, "Aktif bağlantı testi başarısız"
+                    extra = ""
+                R.finding(sev, title,
+                          "%s%s\nAşama: %s · Hata: %s%s" % (
+                              extra, verdict,
+                              dict((k, n) for k, n, _ in PROBE_STAGES).get(st, st),
+                              probe["error"],
+                              "\nZaman aşımı adımın %d sn içinde tamamlanmadığını gösterir."
+                              % probe.get("timeout", PROBE_TIMEOUT) if timeout_hit else ""))
 
     # ---------------- 4) Bağlantı / Temel TCP / DNS ----------------
     R.section("4) Bağlantı, Temel TCP ve DNS")
@@ -1994,11 +2249,15 @@ def main():
                               "porta bağlanamazsa Lider'e subscribe OLAMAZ." % err)
             nb["net_basics"]["broker_tcp_open"] = any_open
         else:
-            R.line("Broker TCP", "hedef belirlenemedi (config root gerekli, canlı soket yok)",
-                   WARN)
-            R.finding(WARN, "Broker uç noktası saptanamadı",
-                      "Ne config okunabildi ne de canlı broker soketi bulundu. "
-                      "Bağlanma denemesi olup olmadığını anlamak için sudo ile çalıştırın.")
+            if str(D.get("registered")) != "1":
+                R.line("Broker TCP", "hedef yok — kayıt tamamlanmadığı için Pulsar sunucu "
+                       "adresi henüz messaging.conf'a yazılmamış", INFO)
+            else:
+                R.line("Broker TCP", "hedef belirlenemedi (messaging.conf'ta adres yok, "
+                       "canlı soket yok)", WARN)
+                R.finding(WARN, "Broker uç noktası saptanamadı",
+                          "Tahta kayıtlı görünüyor ama messaging.conf'ta Pulsar sunucu "
+                          "adresi yok ve canlı broker soketi bulunamadı.")
     D["net_basics"] = nb["net_basics"]
 
     if args.no_net:
@@ -2043,8 +2302,12 @@ def main():
                             R.finding(FAIL, "Pulsar trust sertifika dosyası yok",
                                       "tls_trust_certs_file_path=%s bulunamadı." % ca)
             else:
-                R.line("Pulsar config", "host/port okunamadı (root?)",
-                       WARN if not root else FAIL)
+                if str(D.get("registered")) != "1":
+                    R.line("Pulsar config", "host/port boş — kayıt tamamlanınca Lider'in "
+                           "yanıtıyla yazılır", INFO)
+                else:
+                    R.line("Pulsar config", "host/port boş (messaging.conf)",
+                           WARN if not root else FAIL)
 
             # kayıt (register) ucu
             reg_url = cfg(cp, "REGISTRATION", "registration_url")
@@ -2164,6 +2427,28 @@ def main():
                                data.get("board_id")))
             elif reg is True:
                 R.note("Kayıtlı ama 'data' alanı boş döndü.")
+
+    # Lider kayıt sunucusu hatası: operatöre iletilecek bilgilerle
+    reg_err = D.get("registration_errors") or registration_request_errors(srv_start)
+    if reg_err["count"] and str(D.get("registered")) != "1":
+        sch = D.get("school") or {}
+        server_side = any(c.startswith("5") for c in reg_err["codes"])
+        R.finding(FAIL, "Lider kayıt sunucusu kayıt isteğini reddediyor (%s)" %
+                  ", ".join(reg_err["kinds"]),
+                  "Ahenk'in kayıt isteği (%s) %d kez başarısız oldu, son: %s. Kayıt "
+                  "tamamlanmadığı için tahta Lider'e bağlanamaz.\n%s\n"
+                  "OPERATÖRE İLETİN: MAC %s · board_id %s · okul kodu %s · hostname %s · "
+                  "son deneme %s." % (
+                      reg_err["url"] or "register-liderahenk.eba.gov.tr/register",
+                      reg_err["count"], reg_err["last"],
+                      ("HTTP 5xx SUNUCU TARAFI hatasıdır (Lider kayıt servisi isteği "
+                       "işlerken iç hataya düşüyor); tahtada yapılacak bir düzeltme yok. "
+                       "ETA Kayıt → Düzenle → Kaydet yalnızca yeni UUID ile yeni bir deneme "
+                       "başlatır, sonuç değişmez." if server_side else
+                       "İstek sunucuya ulaşamadı ya da yanıt alınamadı; ağ ve kayıt ucu "
+                       "erişimini kontrol edin."),
+                      live_mac or "?", sch.get("board_id", "?"), sch.get("code", "?"),
+                      platform.node(), reg_err["last"]))
 
     # ---------------- 6) Sistem / Dağıtım / Çekirdek ----------------
     R.section("6) Sistem / Dağıtım / Çekirdek")
