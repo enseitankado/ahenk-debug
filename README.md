@@ -199,6 +199,20 @@ ve Pulsar adres kontrolleri hata vermez, "kayıt tamamlanınca yazılır" diye b
 | Kim yapar | ETA Kayıt programı | Ahenk servisi |
 | Sunucu | `api-etap.eba.gov.tr` | `register-liderahenk.eba.gov.tr` |
 
+`registered` **yerel** bir bayraktır (`/etc/ahenk/ahenk.db`): Lider'in kaydı geçmişte
+kabul ettiğini gösterir, bugün hâlâ geçerli olduğunu doğrulamaz (Lider'de ajan
+silinse bile 1 kalır ve Ahenk yeniden kayıt olmaz). Bu yüzden rapor, 3. bölümde
+**"Lider kaydı (sunucu tarafı)"** satırını ayrıca verir:
+- **sunucu tanıyor** — Ahenk bu kimlikle Pulsar'a bağlı ya da aktif test kimlik
+  doğrulamasını geçti (OK);
+- **sunucu TANIMIYOR** — aktif test oturumu reddetti; kayıt Lider'de silinmiş/
+  değişmiş olabilir (FAIL);
+- **sunucu tarafı doğrulanamadı** — canlı bağlantı yok ve test kimliği doğrulayamadı
+  (INFO).
+
+Zaman çizelgesinin son satırı ve operatöre giden özet bunu birlikte yazar, ör.
+`Lider kaydı: var (yerel DB) — sunucu tanıyor`.
+
 ETA kaydının başarılı olması (ör. derslik adının değişmesi) Lider kaydını garanti
 etmez: ETA Kayıt kaydettikten sonra Ahenk'i başlatır, Ahenk de Lider'e ayrıca kayıt
 olur. Lider kaydı başarısız olursa Ahenk kendini durdurur.

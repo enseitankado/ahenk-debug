@@ -833,6 +833,17 @@ REG_ERR_RE = re.compile(
     r"HTTP error occurred: (\d{3})|HTTP connection error occurred|The request timed out")
 
 
+def lider_status_text(D):
+    """'Lider kaydı' özeti: yerel DB bayrağı + sunucu tarafı doğrulama (varsa)."""
+    reg = str(D.get("registered"))
+    if reg == "0":
+        return "yok (yerel DB)"
+    if reg != "1":
+        return "?"
+    srv = (D.get("lider_server") or {}).get("short")
+    return "var (yerel DB)" + (" — %s" % srv if srv else "")
+
+
 def stop_reason(msg):
     """Ahenk'in kendini durdurma satırından neden: 'pulsar' | 'registration' | None."""
     msg = msg or ""
@@ -1416,8 +1427,7 @@ def build_send_summary(D, findings):
                      (sch.get("city"), sch.get("town"), sch.get("school")))
     lc = D.get("live_connection") or {}
     lines.append("servis: %s | canlı TCP: %s | Lider kaydı: %s" % (
-        D.get("service_active"), lc.get("count"),
-        {"1": "var", "0": "yok"}.get(str(D.get("registered")), "?")))
+        D.get("service_active"), lc.get("count"), lider_status_text(D)))
     lines.append("BULGU: %d FAIL, %d WARN" % (n_fail, n_warn))
     # En önemli birkaç bulguyu ekle
     order = {"FAIL": 0, "WARN": 1}
@@ -2020,7 +2030,7 @@ def main():
         D["dn"] = db_reg["dn"]
         R.line("UUID (jid, DB)", db_reg["jid"], INFO)
         R.line("Parola (DB)", mask(db_reg["password"]), INFO)
-        R.line("Lider kaydı (registered)", "%s — %s" % (
+        R.line("Lider kaydı (yerel DB, registered)", "%s — %s" % (
             db_reg["registered"], "tamamlanmış" if str(db_reg["registered"]) == "1"
             else "TAMAMLANMAMIŞ"),
             OK if str(db_reg["registered"]) == "1" else FAIL)
@@ -2313,6 +2323,25 @@ def main():
                               probe["error"],
                               "\nZaman aşımı adımın %d sn içinde tamamlanmadığını gösterir."
                               % probe.get("timeout", PROBE_TIMEOUT) if timeout_hit else ""))
+
+    # Lider kaydı sunucu tarafında geçerli mi? (yerel DB yalnızca geçmişi gösterir)
+    if str(D.get("registered")) == "1":
+        pr = D.get("active_probe") or {}
+        if conn_live:
+            ls = ("sunucu tanıyor", "Ahenk bu kimlikle Pulsar'a bağlı", OK)
+        elif pr.get("auth_ok") is True:
+            ls = ("sunucu tanıyor", "aktif test kimlik doğrulamasını geçti", OK)
+        elif pr.get("auth_ok") is False:
+            ls = ("sunucu TANIMIYOR", "aktif test oturumu reddetti — kayıt Lider'de "
+                  "silinmiş/değişmiş olabilir", FAIL)
+        else:
+            ls = ("sunucu tarafı doğrulanamadı", "canlı bağlantı yok, aktif test kimliği "
+                  "doğrulayamadı", INFO)
+        D["lider_server"] = {"short": ls[0], "evidence": ls[1]}
+        R.line("Lider kaydı (sunucu tarafı)", "%s — %s" % (ls[0], ls[1]), ls[2])
+        if ls[2] == INFO:
+            R.note("Yerel DB'deki registered=1, Lider'in kaydı geçmişte kabul ettiğini "
+                   "gösterir; bugün hâlâ geçerli olduğunu doğrulamaz.")
 
     # ---------------- 4) Bağlantı / Temel TCP / DNS ----------------
     R.section("4) Bağlantı, Temel TCP ve DNS")
@@ -2780,8 +2809,7 @@ def main():
             "pulsar": " (Pulsar'a bağlanamadı)"}.get(
                 stop_reason(logs["stopping"].get("last_msg")), ""))
     R.event(datetime.datetime.now(), "Rapor alındı — servis: %s/%s, Lider kaydı: %s" % (
-        D.get("service_active"), D.get("service_enabled"),
-        {"1": "var", "0": "yok"}.get(str(D.get("registered")), "?")))
+        D.get("service_active"), D.get("service_enabled"), lider_status_text(D)))
     D["timeline"] = [(dt.strftime("%Y-%m-%d %H:%M:%S"), t)
                      for dt, t in sorted(R.timeline, key=lambda e: e[0])]
 
