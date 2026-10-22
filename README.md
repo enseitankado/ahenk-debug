@@ -284,9 +284,18 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
 | ConsumerBusy **bayat** (servis yeniden başlamadan önce ya da sonrasında başarı var) | **Gösterilmez** — geçmiş oturuma ait |
 | ConsumerBusy **güncel** + sonrasında başarı yok | **FAIL** — "Aktif klon/çakışma sürüyor" |
 
-Aynı kural Pulsar bağlantı hataları ve son `ERROR` satırı için de geçerlidir:
-geçmiş hatalar (servis yeniden başlamadan önceki, sonrasında başarılı olay olan ya
-da şu an canlı broker bağlantısı varken kalanlar) raporda gösterilmez.
+Aynı kural Pulsar bağlantı hataları ve "Ahenk günlüğündeki son hata" satırı için de
+geçerlidir: geçmiş hatalar (**son açılıştan önceki**, servis yeniden başlamadan önceki,
+sonrasında başarılı olay olan ya da şu an canlı broker bağlantısı varken kalanlar)
+raporda gösterilmez. Son açılış ölçütü, servis çalışmıyorken de (başlangıç zamanı
+yokken) eski hataların ayıklanmasını sağlar; ConsumerBusy ve not_authorized için de
+uygulanır.
+
+**Bilinen zararsız Ahenk hataları** "son hata" seçilirken atlanır ve ayrıca bilgi
+(INFO) olarak açıklamasıyla gösterilir. Şu an tanınan: tahta kapanırken
+`resource-usage` eklentisinde `module 'shutdown' has no attribute 'handle_mode'`
+(Ahenk'te isim çakışması; eklentinin `shutdown.py`'si "bilgisayarı kapat" görevinin
+modülüdür, kapanış bildirimi işleyicisi değildir — bir şey bozulmaz).
 
 ---
 

@@ -367,6 +367,31 @@ def parse_log_ts(line):
     return None
 
 
+# Ahenk'in bilinen, zararsız hataları: (desen, kısa ad, açıklama). "Son hata" seçilirken
+# atlanır, ayrıca bilgi olarak gösterilir.
+KNOWN_BENIGN_ERRORS = [
+    (re.compile(r"SHUTDOWN_MODE on resource-usage plugin.*has no attribute 'handle_mode'"),
+     "kapanışta resource-usage eklentisi",
+     "Tahta kapanırken Ahenk her eklentide 'shutdown' adlı modülün handle_mode() "
+     "fonksiyonunu çağırır; resource-usage eklentisindeki shutdown.py ise Lider'den "
+     "gelen 'bilgisayarı kapat' görevinin modülüdür ve bu fonksiyonu yoktur (isim "
+     "çakışması). Her kapanışta yazılır; bir şey bozulmaz."),
+]
+
+
+def known_benign_error(line):
+    for rx, name, expl in KNOWN_BENIGN_ERRORS:
+        if rx.search(line):
+            return name, expl
+    return None
+
+
+def boot_time_dt():
+    """Son açılış zamanı (/proc/stat btime)."""
+    m = re.search(r"^btime (\d+)", read_file("/proc/stat") or "", re.M)
+    return datetime.datetime.fromtimestamp(int(m.group(1))) if m else None
+
+
 def analyze_logs(max_lines=6000):
     """Son logları tara; her olay için sayı + son zaman damgası (str ve datetime)."""
     patterns = {
@@ -386,6 +411,8 @@ def analyze_logs(max_lines=6000):
     res["available"] = False
     res["last_error"] = None
     res["last_error_dt"] = None
+    res["benign_errors"] = {"count": 0, "last": None, "last_dt": None, "name": None,
+                            "explanation": None}
     res["last_line_dt"] = None
     # Logları KRONOLOJİK sırayla birleştir (eski .1 önce, güncel .log sonra).
     readable = [lf for lf in LOG_FILES if os.access(lf, os.R_OK)]
@@ -410,8 +437,16 @@ def analyze_logs(max_lines=6000):
                 if dt:
                     res[key]["last_dt"] = dt
         if "ERROR" in ln:
-            res["last_error"] = ln.strip()[:200]
-            res["last_error_dt"] = dt
+            benign = known_benign_error(ln)
+            if benign:
+                b = res["benign_errors"]
+                b["count"] += 1
+                b["name"], b["explanation"] = benign
+                b["last"] = LOG_TS_RE.search(ln).group(1) if LOG_TS_RE.search(ln) else None
+                b["last_dt"] = dt
+            else:
+                res["last_error"] = ln.strip()[:400]
+                res["last_error_dt"] = dt
     return res
 
 
@@ -1616,6 +1651,7 @@ def main():
     root = is_root()
 
     srv_start = service_start_dt()
+    boot_dt = boot_time_dt()
 
     # ---------------- 1) Genel / servis / yerel sağlık ----------------
     R.section("1) Genel Durum, Servis ve Yerel Sağlık")
@@ -2052,6 +2088,7 @@ def main():
         # önceki ya da sonrasında başarılı Pulsar olayı olan kayıtlar eski
         # oturuma aittir. Yalnızca güncel ConsumerBusy raporlanır.
         cb_stale = bool((srv_start and cb_dt and cb_dt < srv_start) or
+                        (boot_dt and cb_dt and cb_dt < boot_dt) or
                         (last_success and cb_dt and last_success > cb_dt))
         if not cb_stale:
             # Güncel/aktif ConsumerBusy
@@ -2073,6 +2110,7 @@ def main():
         na = logs["not_authorized"]
         if na["count"] > 0:
             na_stale = (srv_start and na["last_dt"] and na["last_dt"] < srv_start) or \
+                       (boot_dt and na["last_dt"] and na["last_dt"] < boot_dt) or \
                        (last_success and na["last_dt"] and last_success > na["last_dt"])
             if na_stale:
                 R.line("not_authorized (log)", "%d kez ama bayat (son: %s)" %
@@ -2340,22 +2378,31 @@ def main():
     if logs["available"]:
         if logs["publish_ok"]["last"]:
             R.line("Son başarılı yayın", logs["publish_ok"]["last"], OK)
-        # Geçmiş (bayat) hatalar gösterilmez: servis yeniden başlamadan önceki,
-        # sonrasında başarılı Pulsar olayı olan ya da şu an canlı broker
-        # bağlantısı varken kalan hatalar artık geçerli değildir.
+        # Geçmiş (bayat) hatalar gösterilmez: önceki açılışa ait, servis yeniden
+        # başlamadan önceki, sonrasında başarılı Pulsar olayı olan ya da şu an canlı
+        # broker bağlantısı varken kalan hatalar artık geçerli değildir.
         def _stale(dt):
             if live["count"] > 0:
                 return True
             if dt is None:
                 return False
-            return bool((srv_start and dt < srv_start) or
+            return bool((boot_dt and dt < boot_dt) or
+                        (srv_start and dt < srv_start) or
                         (last_success and last_success > dt))
         pcf = logs["pulsar_conn_fail"]
         if pcf["count"] and not _stale(pcf["last_dt"]):
             R.line("Pulsar bağlantı hataları", "%d kez, son: %s" %
                    (pcf["count"], pcf["last"]), WARN)
         if logs["last_error"] and not _stale(logs["last_error_dt"]):
-            R.note("Son ERROR: %s" % logs["last_error"])
+            m = re.match(r"^(?:format=)?(\S+ \S+?),\d+\s.*?\]\s*(.*)$", logs["last_error"])
+            R.line("Ahenk günlüğündeki son hata",
+                   "%s — %s" % (m.group(1), m.group(2)[:300]) if m else logs["last_error"],
+                   WARN)
+        be = logs["benign_errors"]
+        if be["count"] and not _stale(be["last_dt"]):
+            R.line("Bilinen zararsız Ahenk hatası", "%s: %d kez, son: %s" %
+                   (be["name"], be["count"], be["last"]), INFO)
+            R.note(be["explanation"])
 
     # ---------------- 5) ETA Kayıt Sunucusu (Okul/Şehir/İlçe) ----------------
     R.section("5) ETA Kayıt Sunucusu — Okul / Şehir / İlçe")
