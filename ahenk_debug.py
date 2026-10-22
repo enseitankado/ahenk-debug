@@ -132,6 +132,7 @@ class Report:
         self._cur = None
         self.findings = []          # (severity, title, detail)
         self.data = {}              # ham veri (json çıktısı için)
+        self.timeline = []          # [(datetime, metin)]
 
     # --- bölüm/satır ---
     def section(self, title):
@@ -152,6 +153,11 @@ class Report:
     # --- teşhis bulgusu (özet için) ---
     def finding(self, severity, title, detail=""):
         self.findings.append((severity, title, detail))
+
+    # --- zaman çizelgesi ---
+    def event(self, dt, text):
+        if isinstance(dt, datetime.datetime):
+            self.timeline.append((dt, text))
 
     # --- render ---
     def render(self):
@@ -180,6 +186,13 @@ class Report:
         if not self.findings:
             out.append("  (bulgu yok)")
         out.append(bar)
+        if self.timeline:
+            out.append(bold("  ZAMAN ÇİZELGESİ") + grey("  (son açılıştan bu yana; her olay "
+                                                       "türünün son kaydı)"))
+            out.append(bar)
+            for dt, text in sorted(self.timeline, key=lambda e: e[0]):
+                out.append("  %s  %s" % (dt.strftime("%Y-%m-%d %H:%M:%S"), text))
+            out.append(bar)
         return "\n".join(out)
 
 
@@ -433,6 +446,7 @@ def analyze_logs(max_lines=6000):
         for key, rx in patterns.items():
             if rx.search(ln):
                 res[key]["count"] += 1
+                res[key]["last_msg"] = ln.strip()
                 res[key]["last"] = LOG_TS_RE.search(ln).group(1) if LOG_TS_RE.search(ln) else ln[:60]
                 if dt:
                     res[key]["last_dt"] = dt
@@ -819,11 +833,29 @@ REG_ERR_RE = re.compile(
     r"HTTP error occurred: (\d{3})|HTTP connection error occurred|The request timed out")
 
 
+def stop_reason(msg):
+    """Ahenk'in kendini durdurma satırından neden: 'pulsar' | 'registration' | None."""
+    msg = msg or ""
+    if "Pulsar" in msg:
+        return "pulsar"
+    if re.search(r"registration", msg, re.I):
+        return "registration"
+    return None
+
+
+def hms(dt_or_str):
+    """Zaman damgasının saat kısmı (HH:MM:SS)."""
+    if isinstance(dt_or_str, datetime.datetime):
+        return dt_or_str.strftime("%H:%M:%S")
+    m = re.search(r"\d{2}:\d{2}:\d{2}", str(dt_or_str or ""))
+    return m.group(0) if m else str(dt_or_str)
+
+
 def registration_request_errors(srv_start):
     """Ahenk'in Lider'e kayıt isteğindeki (/register) hatalar — mevcut servis
     oturumunda (srv_start sonrası). HTTP kodları, son zaman ve URL."""
     out = {"count": 0, "codes": [], "last": None, "last_dt": None, "url": None,
-           "kinds": []}
+           "kinds": [], "first": None, "first_dt": None}
     texts = [read_file(lf) or "" for lf in sorted(
         [l for l in LOG_FILES if os.access(l, os.R_OK)], key=os.path.getmtime)]
     for ln in "\n".join(texts).splitlines():
@@ -851,6 +883,8 @@ def registration_request_errors(srv_start):
         ts = LOG_TS_RE.search(ln)
         out["last"] = ts.group(1) if ts else out["last"]
         out["last_dt"] = dt or out["last_dt"]
+        if out["first"] is None:
+            out["first"], out["first_dt"] = out["last"], out["last_dt"]
     return out
 
 
@@ -1381,7 +1415,7 @@ def build_send_summary(D, findings):
         lines.append("okul: %s / %s / %s" %
                      (sch.get("city"), sch.get("town"), sch.get("school")))
     lc = D.get("live_connection") or {}
-    lines.append("servis: %s | canlı TCP: %s | kayıt: %s" % (
+    lines.append("servis: %s | canlı TCP: %s | Lider kaydı: %s" % (
         D.get("service_active"), lc.get("count"),
         {"1": "var", "0": "yok"}.get(str(D.get("registered")), "?")))
     lines.append("BULGU: %d FAIL, %d WARN" % (n_fail, n_warn))
@@ -1815,29 +1849,47 @@ def main():
         st = logs["stopping"]
         self_stopped = logs["available"] and st["count"] > 0
         D["self_stopped"] = self_stopped
+        why = stop_reason(st.get("last_msg"))
+        D["stop_reason"] = why if self_stopped else None
+        started = ("Ahenk servisi başladı (%s)" % hms(srv_start)) if srv_start else \
+            "Ahenk servisi başladı"
+        if self_stopped:
+            R.line("Kendini durdurma (log)", "son: %s" % st["last"], FAIL)
         if self_stopped and reg_err["count"]:
-            R.line("Kendini durdurma (log)", "son: %s" % st["last"], FAIL)
-            R.finding(FAIL, "Ahenk kendini durdurmuş — Lider kayıt isteği başarısız (%s)" %
-                      ", ".join(reg_err["kinds"]),
-                      "Ahenk açılışta Lider'e kayıt isteği gönderdi; istek %d kez başarısız "
-                      "oldu (%s, son: %s), denemeler tükenince Ahenk kendini durdurdu.\n"
-                      "Ayrıntı ve operatöre iletilecek bilgiler: 'Lider kayıt sunucusu' "
-                      "bulgusu.\nNOT: ETA Kayıt → Düzenle → Kaydet yalnızca yeni bir kayıt "
-                      "denemesi başlatır (her seferinde yeni UUID üretilir); sunucu hata "
-                      "verdiği sürece sonuç değişmez." % (
-                          reg_err["count"], ", ".join(reg_err["kinds"]), reg_err["last"]))
+            R.finding(FAIL, "Ahenk başladı, Lider kaydı başarısız olunca kendini durdurdu "
+                      "(%s)" % ", ".join(reg_err["kinds"]),
+                      "%s. Lider'e kayıt isteği %d kez başarısız oldu (%s, %s–%s).\n"
+                      "Lider kaydı olmadan Ahenk'in mesajlaşma kimliği oluşmaz; bağlanamayacağı "
+                      "için Ahenk kendini durdurdu (%s).\n"
+                      "Sorun Lider kayıt sunucusunda. ETA Kayıt'ta yeniden kaydetmek aynı "
+                      "zinciri tekrarlar (yeni UUID, aynı hata). Operatöre iletilecek bilgiler: "
+                      "'Lider kayıt sunucusu' bulgusu; olay sırası: rapor sonundaki zaman "
+                      "çizelgesi." % (started, reg_err["count"], ", ".join(reg_err["kinds"]),
+                                      hms(reg_err["first"]), hms(reg_err["last"]),
+                                      hms(st["last"])))
+        elif self_stopped and why == "registration":
+            R.finding(FAIL, "Ahenk başladı, Lider kaydını tamamlayamayınca kendini durdurdu",
+                      "%s. Lider'e kayıt denemeleri sonuçsuz kaldı; Lider kaydı olmadan "
+                      "mesajlaşma kimliği oluşmadığı için Ahenk kendini durdurdu (%s).\n"
+                      "Kayıt ucuna erişimi (4. bölüm) ve Lider'in yanıtını (günlük) inceleyin; "
+                      "sonra: sudo systemctl start ahenk.service (ya da ETA Kayıt → Düzenle → "
+                      "Kaydet)." % (started, hms(st["last"])))
+        elif self_stopped and why == "pulsar":
+            R.finding(FAIL, "Ahenk Pulsar'a bağlanamayınca kendini durdurdu",
+                      "%s; Pulsar sunucusuna 10 denemede (1–64 dk aralıklarla, ≈5–6 saat) "
+                      "bağlanamadı ve kendini durdurdu (%s).\n"
+                      "Bilinçli durdurma olduğu için kendiliğinden yeniden başlamaz; tahta "
+                      "yeniden açılana ya da servis başlatılana kadar çevrimdışı kalır.\n"
+                      "Önce ağ/Pulsar erişimini düzeltin (3–4. bölüm), sonra: sudo systemctl "
+                      "start ahenk.service (ya da ETA Kayıt → Düzenle → Kaydet)."
+                      % (started, st["last"]))
         elif self_stopped:
-            R.line("Kendini durdurma (log)", "son: %s" % st["last"], FAIL)
-            R.finding(FAIL, "Ahenk kendini durdurmuş — servis çalışmıyor",
-                      "Ahenk, Pulsar'a bağlanamayınca ya da kayıt denemeleri tükenince "
-                      "kendini 'systemctl stop ahenk.service' ile durdurur (son: %s). "
-                      "Bilinçli durdurma olduğundan systemd (Restart=always) yeniden "
-                      "başlatmaz; ETA Kayıt arka plan denetimi de 'Ahenk kurulu' deyip "
-                      "çıkar, servisi başlatmaz. Tahta bir sonraki açılışa kadar Lider'de "
-                      "çevrimdışı kalır.\n"
-                      "Önce ağ/Pulsar erişimini düzeltin (aşağıdaki bölümler), sonra: "
-                      "sudo systemctl start ahenk.service — ya da tahtayı yeniden başlatın.\n"
-                      "%s" % (st["last"], etareg_fix))
+            R.finding(FAIL, "Ahenk kendini durdurmuş",
+                      "%s; ardından kendini durdurdu (%s, systemctl stop). Bilinçli durdurma "
+                      "olduğu için kendiliğinden yeniden başlamaz.\n"
+                      "Nedeni için günlüğe ve aşağıdaki bölümlere bakın; sonra: sudo systemctl "
+                      "start ahenk.service (ya da ETA Kayıt → Düzenle → Kaydet)."
+                      % (started, st["last"]))
         else:
             R.finding(FAIL, "Ahenk servisi çalışmıyor (%s)" % active,
                       "Servis durduysa makine kesinlikle çevrimdışı görünür. ETA Kayıt "
@@ -1942,7 +1994,7 @@ def main():
     R.line("Yetki", "root (tam erişim)", OK)
 
     # ---------------- 2) Kimlik ----------------
-    R.section("2) Kimlik (UUID / Parola / Kayıt)")
+    R.section("2) Ahenk Kimliği ve Lider Kaydı (UUID / Parola)")
     db_path = args.db or cfg(cp, "BASE", "dbPath", DEFAULT_DB)
     db = load_db(db_path)
     D["db"] = {"path": db_path, "ok": db["ok"], "error": db["error"]}
@@ -1968,8 +2020,10 @@ def main():
         D["dn"] = db_reg["dn"]
         R.line("UUID (jid, DB)", db_reg["jid"], INFO)
         R.line("Parola (DB)", mask(db_reg["password"]), INFO)
-        R.line("registered", str(db_reg["registered"]),
-               OK if str(db_reg["registered"]) == "1" else WARN)
+        R.line("Lider kaydı (registered)", "%s — %s" % (
+            db_reg["registered"], "tamamlanmış" if str(db_reg["registered"]) == "1"
+            else "TAMAMLANMAMIŞ"),
+            OK if str(db_reg["registered"]) == "1" else FAIL)
         dn = (db_reg["dn"] or "").strip()
         registered_flag = str(db_reg["registered"]) == "1"
         # Mevcut mimari LDAP kullanmıyor: dn (LDAP dizin nesnesi) yalnızca bilgi
@@ -1977,13 +2031,18 @@ def main():
         # bayrağına göre verilir.
         R.line("LDAP dn", dn or "(boş — LDAP kullanılmıyor, denetlenmez)", INFO)
         if not registered_flag:
-            R.line("Kayıt türü", "kayıt tamamlanmamış (registered=0)", FAIL)
             rerr = D.get("registration_errors") or {}
-            R.finding(FAIL, "Kayıt tamamlanmamış (registered=0)",
-                      ("Neden: Lider kayıt isteği başarısız (%s) — 'Lider kayıt sunucusu' "
-                       "bulgusuna bakın." % ", ".join(rerr["kinds"])) if rerr.get("count") else
-                      "Tahta Lider'e hiç kaydolamamış olabilir; kayıt akışını "
-                      "(ağ + Lider yanıtı) inceleyin.")
+            R.finding(FAIL, "Lider kaydı (Ahenk) tamamlanmamış (registered=0)",
+                      "Bu, Ahenk'in Lider'e kaydıdır; ETA kaydından ayrıdır:\n"
+                      "· ETA kaydı — tahtanın envanteri (okul, derslik adı, board_id). ETA "
+                      "Kayıt programı yapar (api-etap.eba.gov.tr). Durumu: 5. bölüm.\n"
+                      "· Lider kaydı — Ahenk'in mesajlaşma kimliği (UUID/parola). Ahenk servisi "
+                      "yapar (register-liderahenk.eba.gov.tr). ETA kaydı başarılı olsa bile "
+                      "ayrıca tamamlanmalıdır; tamamlanmadan tahta Lider'e bağlanamaz.\n%s" % (
+                          ("Neden: Lider kayıt isteği başarısız (%s) — 'Lider kayıt sunucusu' "
+                           "bulgusuna bakın." % ", ".join(rerr["kinds"])) if rerr.get("count")
+                          else "Neden günlükte görünmüyor; kayıt ucuna erişimi (4. bölüm) "
+                               "inceleyin."))
         R.line("Kayıt zamanı", db_reg["timestamp"], INFO)
     else:
         R.line("DB", "okunamadı: %s" % (db["error"] or "?"),
@@ -2465,7 +2524,7 @@ def main():
             R.note(be["explanation"])
 
     # ---------------- 5) ETA Kayıt Sunucusu (Okul/Şehir/İlçe) ----------------
-    R.section("5) ETA Kayıt Sunucusu — Okul / Şehir / İlçe")
+    R.section("5) ETA Kaydı (tahta envanteri) — Okul / Şehir / İlçe")
     eta_backend, eta_header = load_eta_config()
     R.line("API tabanı", eta_backend, INFO)
     query_mac = args.mac or live_mac
@@ -2499,14 +2558,14 @@ def main():
             reg = eta["registered"]
             R.line("HTTP durumu", str(eta["status"]), INFO)
             if reg is True:
-                R.line("Kayıt durumu", "KAYITLI ✓", OK)
+                R.line("ETA kaydı", "KAYITLI ✓", OK)
             elif reg is False and alt:
-                R.line("Kayıt durumu", "bu MAC ile KAYITLI DEĞİL ✗", FAIL)
+                R.line("ETA kaydı", "bu MAC ile KAYITLI DEĞİL ✗", FAIL)
                 R.line("Farklı MAC ile kayıt", "BULUNDU: %s (%s)" % (alt[0], alt[1]), WARN)
                 R.note("Aşağıdaki okul/birim bilgileri %s kaydındandır." % alt[0])
                 eta = alt[2]
             elif reg is False:
-                R.line("Kayıt durumu", "KAYITLI DEĞİL ✗", FAIL)
+                R.line("ETA kaydı", "KAYITLI DEĞİL ✗", FAIL)
                 R.finding(FAIL, "Tahta ETA API'de KAYITLI DEĞİL",
                           "MAC=%s bu API'de kayıtlı görünmüyor.%s Lider, Ahenk "
                           "bağlanınca bu sunucuya sorar; 'kayıtlı değil' yanıtı "
@@ -2517,7 +2576,7 @@ def main():
                               "kartların MAC'leri de sorgulandı (%s); hiçbirinde kayıt "
                               "yok." % ", ".join(alt_tried)) if alt_tried else ""))
             else:
-                R.line("Kayıt durumu", "belirsiz (registered=%s)" % reg, WARN)
+                R.line("ETA kaydı", "belirsiz (registered=%s)" % reg, WARN)
 
             if eta.get("registered_ip") is not None:
                 R.line("registered_ip", str(eta["registered_ip"]),
@@ -2543,7 +2602,7 @@ def main():
                     "unit_name": data.get("unit_name"), "board_id": data.get("board_id"),
                 }
                 if reg is True:
-                    R.finding(OK, "Tahta kaydı: %s / %s / %s" %
+                    R.finding(OK, "ETA kaydı: %s / %s / %s" %
                               (data.get("city_name"), data.get("town_name"),
                                data.get("school_name")),
                               "Okul kodu %s · birim '%s' · board_id %s" %
@@ -2684,6 +2743,47 @@ def main():
             R.finding(OK, "Kritik hata bulunamadı",
                       "Servis çalışıyor, kimlik tutarlı, ConsumerBusy yok. "
                       "Çevrimdışı görünüm geçici ağ kesintisi kaynaklı olabilir.")
+
+    # ---------------- Zaman çizelgesi ----------------
+    def ev(dt, text):
+        if isinstance(dt, datetime.datetime) and (not boot_dt or dt >= boot_dt):
+            R.event(dt, text)
+    if boot_dt:
+        R.event(boot_dt, "Tahta açıldı")
+    if etareg.get("last_run"):
+        ev(etareg["last_run"], "ETA Kayıt arka plan denetimi: %s" %
+           (etareg["outcome_text"] or "sonuç kaydı yok"))
+    if etareg.get("gui_update_ok"):
+        unit = (D.get("school") or {}).get("unit_name")
+        ev(etareg["gui_update_ok"], "ETA Kayıt: ETA kaydı kaydedildi/güncellendi%s" %
+           (" (derslik: %s)" % unit if unit else ""))
+    if etareg.get("install_dt"):
+        ev(etareg["install_dt"], "ETA Kayıt: Ahenk kurulumu %s" %
+           ("başarılı" if etareg["install"] == "ok" else "BAŞARISIZ"))
+    if etareg.get("service_dt"):
+        ev(etareg["service_dt"], "ETA Kayıt: Ahenk servisini %s" %
+           ("etkinleştirip başlattı" if etareg["service"] == "ok" else "başlatamadı"))
+    ev(srv_start, "Ahenk servisi başladı")
+    rerr = D.get("registration_errors") or {}
+    if rerr.get("count"):
+        ev(rerr["first_dt"], "Ahenk: Lider kayıt isteği başarısız — %s ×%d (son: %s)" % (
+            ", ".join(rerr["kinds"]), rerr["count"], hms(rerr["last"])))
+    ev(logs["reg_success"]["last_dt"], "Ahenk: Lider kaydı başarılı")
+    ev(logs["pulsar_connected"]["last_dt"], "Ahenk: Pulsar'a bağlandı")
+    if logs["pulsar_conn_fail"]["count"]:
+        ev(logs["pulsar_conn_fail"]["last_dt"], "Ahenk: Pulsar bağlantı hatası")
+    ev(logs["consumer_busy"]["last_dt"], "Ahenk: ConsumerBusy (abonelik başka tahtada)")
+    ev(logs["publish_ok"]["last_dt"], "Ahenk: son başarılı mesaj yayını")
+    if logs["stopping"]["count"]:
+        ev(logs["stopping"]["last_dt"], "Ahenk kendini durdurdu%s" % {
+            "registration": " (Lider kaydı başarısız)",
+            "pulsar": " (Pulsar'a bağlanamadı)"}.get(
+                stop_reason(logs["stopping"].get("last_msg")), ""))
+    R.event(datetime.datetime.now(), "Rapor alındı — servis: %s/%s, Lider kaydı: %s" % (
+        D.get("service_active"), D.get("service_enabled"),
+        {"1": "var", "0": "yok"}.get(str(D.get("registered")), "?")))
+    D["timeline"] = [(dt.strftime("%Y-%m-%d %H:%M:%S"), t)
+                     for dt, t in sorted(R.timeline, key=lambda e: e[0])]
 
     # ---------------- Çıktı ----------------
     if args.json:

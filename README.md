@@ -176,7 +176,7 @@ Ayrıca Ahenk'i **yerelde sekteye uğratan** sorunlar:
   `FileNotFoundError` alır. Bu satır hata sayısına katılmaz, "kayıt öncesi BEKLENEN
   hata" diye ayrıca gösterilir.
 
-### 2) Kimlik (UUID / Parola / Kayıt)
+### 2) Ahenk Kimliği ve Lider Kaydı (UUID / Parola)
 DB'deki UUID (jid), parola (maskeli), `registered` bayrağı, kayıt zaman damgası,
 **DB bütünlük kontrolü** (`PRAGMA integrity_check` — bozuk/kilitli DB Ahenk'i
 durdurur). Root ile: **`ahenk.conf` UID/parola ile DB'nin tutarlılığı** ve Pulsar
@@ -186,9 +186,22 @@ Kayıt tamamlanmamışken `ahenk.conf`'taki UID ve `messaging.conf`'taki Pulsar
 adresi boştur (ikisi de kayıt yanıtıyla yazılır); bu durumda UID/DB karşılaştırması
 ve Pulsar adres kontrolleri hata vermez, "kayıt tamamlanınca yazılır" diye bilgi verir.
 
-**Kayıt durumu** (`registered` bayrağına göre):
-- `registered=1` → kayıtlı → **OK**.
-- `registered=0` → tahta Lider'e hiç kaydolamamış olabilir → **FAIL**.
+**Lider kaydı** (`registered` bayrağına göre):
+- `registered=1` → tamamlanmış → **OK**.
+- `registered=0` → tamamlanmamış → **FAIL**; nedeni (ör. Lider kayıt isteği HTTP 500)
+  bulguda gösterilir.
+
+İki kayıt birbirinden ayrıdır ve rapor bunu açıkça belirtir:
+
+| | ETA kaydı (5. bölüm) | Lider kaydı (2. bölüm) |
+|---|---|---|
+| Ne | tahtanın envanteri: okul, derslik adı, board_id | Ahenk'in mesajlaşma kimliği: UUID/parola |
+| Kim yapar | ETA Kayıt programı | Ahenk servisi |
+| Sunucu | `api-etap.eba.gov.tr` | `register-liderahenk.eba.gov.tr` |
+
+ETA kaydının başarılı olması (ör. derslik adının değişmesi) Lider kaydını garanti
+etmez: ETA Kayıt kaydettikten sonra Ahenk'i başlatır, Ahenk de Lider'e ayrıca kayıt
+olur. Lider kaydı başarısız olursa Ahenk kendini durdurur.
 
 Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
 (LDAP dizin nesnesi) yalnızca bilgi olarak gösterilir, boş olması bulgu üretmez.
@@ -221,7 +234,7 @@ Sonra (root + ağ ile) derin testler: Pulsar/XMPP için **DNS → TCP → TLS el
 sıkışması → sertifika bitişi**; kayıt (register) ucu erişimi; logdaki son
 başarılı yayın ve son hata.
 
-### 5) Kayıt Durumu
+### 5) ETA Kaydı (tahta envanteri)
 Tahtanın **kayıtlı olduğu okul / şehir / ilçe / birim** bilgisini ve kayıt
 durumunu gösterir. Bilgiler her çalıştırmada, tahtanın kimlik MAC'iyle ETA
 sunucusuna yapılan `GET /api/board/check?mac=…` sorgusundan (ETA Kayıt'ın kendi
@@ -249,7 +262,26 @@ tahmini**; **dokunmatik donanımı + sürücüsü**
 
 ### Özet / Teşhis
 Tüm bulguları **önem sırasına** göre (FAIL → WARN → OK → INFO), nedeniyle ve
-önerilen çözümüyle listeler.
+önerilen çözümüyle listeler. Ahenk kendini durdurmuşsa bulgu nedenine göre kısa ve
+olay sırasıyla yazılır (ör. "Ahenk başladı, Lider kaydı başarısız olunca kendini
+durdurdu (HTTP 500)" ya da "Ahenk Pulsar'a bağlanamayınca kendini durdurdu").
+
+### Zaman çizelgesi
+Raporun en sonunda, **son açılıştan bu yana** olaylar zaman sırasıyla listelenir
+(her olay türünün son kaydı): tahtanın açılışı, ETA Kayıt denetimi ve kaydı/
+güncellemesi, ETA Kayıt'ın Ahenk kurulumu ve servis başlatması, Ahenk servisinin
+başlaması, Lider kaydı (başarılı/başarısız), Pulsar bağlantısı ve hataları,
+ConsumerBusy, son başarılı yayın, Ahenk'in kendini durdurması ve raporun alındığı
+an. Örnek:
+
+```
+2026-10-21 11:42:05  ETA Kayıt: ETA kaydı kaydedildi/güncellendi (derslik: Derslik002)
+2026-10-21 11:42:19  ETA Kayıt: Ahenk servisini etkinleştirip başlattı
+2026-10-21 11:42:20  Ahenk servisi başladı
+2026-10-21 11:42:23  Ahenk: Lider kayıt isteği başarısız — HTTP 500 ×3 (son: 11:42:27)
+2026-10-21 11:42:29  Ahenk kendini durdurdu (Lider kaydı başarısız)
+```
+JSON çıktısında `timeline` alanındadır.
 
 ---
 
@@ -406,7 +438,7 @@ listelenir.
 | Broker portuna TCP açılamıyor | 4 | **Güvenlik duvarı / yanlış adres / sunucu kapalı** → subscribe olamaz |
 | DNS sunucusu yok / ad çözülemiyor | 4 | **DNS** sorunu — broker adı IP'ye çevrilemez |
 | DNS/TCP/TLS başarısız, ağ geçidi yok | 4 | **Ağ/bağlantı** sorunu |
-| `registered=0` | 2 | Kayıt **hiç tamamlanmamış** |
+| `registered=0` | 2 | **Lider kaydı** tamamlanmamış (ETA kaydından ayrı) |
 | Ahenk kurulu değil | 1 | **ETA Kayıt kurulumu yapmamış** — Düzenle → Kaydet |
 | Ahenk kayıt isteği HTTP 5xx alıyor | 2 | **Lider kayıt sunucusu hatası** — sunucu tarafı; Düzenle → Kaydet çözmez, operatöre bildirin (rapor MAC/board_id/saat verir) |
 | Aktif test: TCP/TLS başarılı, sonraki adım hata/zaman aşımı | 3 | **Uygulama katmanı** (Pulsar sunucusu) — ağ sağlam |
