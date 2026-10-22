@@ -1203,6 +1203,42 @@ def load_eta_config():
     return backend, header
 
 
+MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.I)
+
+
+def parse_macs(value):
+    """Metinden (tek MAC, liste gösterimi vb.) MAC adreslerini küçük harfle çıkar."""
+    return list(dict.fromkeys(m.lower() for m in MAC_RE.findall(str(value or ""))))
+
+
+def physical_wired_nics(nics):
+    """Kablosuz olmayan, gerçek (sürücülü ya da PCI/USB) ağ kartları."""
+    return [n for n in nics if n.get("mac") and not n.get("wireless")
+            and (n.get("has_driver") or n.get("bus") in ("pci", "usb"))]
+
+
+def find_alt_eta_registration(nics, reg_macs, exclude, backend, header, limit=6):
+    """ETA'da kimlik MAC'iyle kayıt yoksa: Ahenk'in kayıt MAC'i ve tahtadaki diğer
+    kablolu kartların MAC'leriyle sorgula. Dönüş: (mac, kaynak, sorgu sonucu) ya da
+    None; ikinci değer sorgulanan MAC listesi."""
+    cands = []
+    for m in reg_macs:
+        cands.append((m, "Ahenk'in kayıt anındaki MAC'i"))
+    for n in physical_wired_nics(nics):
+        cands.append((n["mac"].lower(), "bu tahtadaki %s arayüzü (bus=%s)" %
+                      (n["interface"], n.get("bus"))))
+    seen, tried = {(exclude or "").lower()}, []
+    for mac, src in cands:
+        if mac in seen or len(tried) >= limit:
+            continue
+        seen.add(mac)
+        tried.append(mac)
+        q = query_eta_board(mac, backend, header)
+        if q.get("registered") is True:
+            return (mac, src, q), tried
+    return None, tried
+
+
 def query_eta_board(mac, backend, header, timeout=12, attempts=2):
     """
     GET {backend}/board/check?mac=<mac>  (eta-register'ın açılışta yaptığı sorgu).
@@ -2032,18 +2068,39 @@ def main():
     live_mac = (ident["mac"] if ident else (eta["mac"] if eta["ok"] else None))
     D["registered_mac"] = reg_mac
     D["live_mac"] = live_mac
-    if reg_mac and live_mac:
-        if reg_mac.lower() == live_mac.lower():
+    reg_macs = parse_macs(reg_mac)
+    D["registered_macs"] = reg_macs
+    if reg_macs and live_mac:
+        local = {n["mac"].lower(): n for n in nics if n.get("mac")}
+        if live_mac.lower() in reg_macs:
             R.line("Kayıt MAC == canlı MAC", "%s (tutarlı)" % live_mac, OK)
+        elif any(m in local for m in reg_macs):
+            m = next(m for m in reg_macs if m in local)
+            R.line("Kayıt MAC vs canlı MAC", "FARKLI — kayıt MAC'i bu tahtadaki %s "
+                   "arayüzüne ait" % local[m]["interface"], WARN)
+            R.finding(WARN, "Kimlik ağ kartı değişmiş (aynı tahta, klon değil)",
+                      "Ahenk kayıt anında %s (%s) kartının MAC'ini kullanmış; bugün kimlik "
+                      "MAC'i %s. İki kart da bu tahtada — klon imaj değil, kimlik kartı "
+                      "seçimi değişmiş (ilk PCI, sürücülü, kablosuz olmayan kart; sürücü "
+                      "yüklenmemesi, arayüz adı/sıra değişimi ya da yeni imaj nedeniyle).\n"
+                      "Ahenk'in kimliği (UUID) MAC'e bağlı değildir, yeniden kayıt "
+                      "GEREKMEZ. Ancak ETA kaydı eski MAC ile olabilir: 5. bölüme bakın."
+                      % (m, local[m]["interface"], live_mac))
         else:
-            R.line("Kayıt MAC vs canlı MAC", "FARKLI", FAIL)
-            R.finding(FAIL, "KLON İMAJ ŞÜPHESİ: kayıttaki MAC bu donanımla uyuşmuyor",
-                      "Kayıt anı MAC=%s, şu anki donanım MAC=%s.\n"
-                      "Bu UUID/parola başka bir makinede üretilip imaj olarak "
-                      "kopyalanmış olabilir. Lider bu UUID'yi başka MAC ile tanır; "
-                      "çakışma/çevrimdışı olur.\nÇÖZÜM: bu makinede yeniden kayıt "
-                      "(ahenk clean + servis restart) ile yeni UUID üretin."
-                      % (reg_mac, live_mac))
+            R.line("Kayıt MAC vs canlı MAC", "FARKLI — kayıt MAC'i bu tahtada yok", FAIL)
+            R.finding(FAIL, "Kayıt MAC'i bu tahtada yok: klon imaj ya da ağ kartı/anakart "
+                      "değişimi",
+                      "Kayıt anı MAC=%s, şu anki kimlik MAC=%s; kayıt MAC'i bu tahtadaki "
+                      "hiçbir kartta yok. İki olasılık:\n"
+                      "1) KLON İMAJ: bu UUID/parola başka bir tahtada üretilip imajla "
+                      "kopyalanmış. Lider aynı UUID'yi iki tahtada görür → çakışma "
+                      "(ConsumerBusy) / çevrimdışı. ÇÖZÜM: bu tahtada yeniden kayıt "
+                      "(ahenk clean + servis restart) ile yeni UUID.\n"
+                      "2) DONANIM DEĞİŞİMİ: OPS modülü ya da anakart değiştirilmiş; UUID "
+                      "bu tahtanındır. ETA kaydı eski MAC ile kalmıştır (5. bölüm); "
+                      "operatörden kaydın MAC'ini güncellemesini isteyin.\n"
+                      "Ayırt etmek için: ConsumerBusy (aynı UUID başka tahtada çalışıyor "
+                      "mu?) ve tahtanın servis geçmişi." % (", ".join(reg_macs), live_mac))
 
     # --- CANLI BAĞLANTI DOĞRULAMASI (statik log değil, gerçek durum) ---
     D["logs"] = {k: v for k, v in logs.items() if isinstance(v, dict)}
@@ -2421,6 +2478,15 @@ def main():
         R.line("Sorgu MAC", query_mac, INFO)
         eta = query_eta_board(query_mac, eta_backend, eta_header)
         D["eta_api"]["result"] = {k: v for k, v in eta.items() if k != "raw"}
+        alt, alt_tried = None, []
+        if eta.get("registered") is False and not args.mac:
+            alt, alt_tried = find_alt_eta_registration(
+                nics, D.get("registered_macs") or [], query_mac, eta_backend, eta_header)
+            D["eta_api"]["alt_tried"] = alt_tried
+            if alt:
+                D["eta_api"]["alt"] = {"mac": alt[0], "source": alt[1],
+                                       "result": {k: v for k, v in alt[2].items()
+                                                  if k != "raw"}}
         if eta["error"] and eta["registered"] is None:
             R.line("ETA API", "ERİŞİLEMEDİ: %s" % eta["error"], FAIL)
             R.finding(FAIL, "ETA kayıt sunucusuna ulaşılamadı",
@@ -2431,14 +2497,22 @@ def main():
             R.line("HTTP durumu", str(eta["status"]), INFO)
             if reg is True:
                 R.line("Kayıt durumu", "KAYITLI ✓", OK)
+            elif reg is False and alt:
+                R.line("Kayıt durumu", "bu MAC ile KAYITLI DEĞİL ✗", FAIL)
+                R.line("Farklı MAC ile kayıt", "BULUNDU: %s (%s)" % (alt[0], alt[1]), WARN)
+                R.note("Aşağıdaki okul/birim bilgileri %s kaydındandır." % alt[0])
+                eta = alt[2]
             elif reg is False:
                 R.line("Kayıt durumu", "KAYITLI DEĞİL ✗", FAIL)
                 R.finding(FAIL, "Tahta ETA API'de KAYITLI DEĞİL",
-                          "MAC=%s bu API'de kayıtlı görünmüyor. Lider, Ahenk "
+                          "MAC=%s bu API'de kayıtlı görünmüyor.%s Lider, Ahenk "
                           "bağlanınca bu sunucuya sorar; 'kayıtlı değil' yanıtı "
                           "gelince kayıt İLERLEMEZ → makine çevrimdışı kalır.\n"
                           "ÇÖZÜM: eta-register ile okul/il/ilçe seçilerek tahta "
-                          "kaydedilmeli." % query_mac)
+                          "kaydedilmeli." % (query_mac, (
+                              " Ahenk'in kayıt MAC'i ve tahtadaki diğer kablolu "
+                              "kartların MAC'leri de sorgulandı (%s); hiçbirinde kayıt "
+                              "yok." % ", ".join(alt_tried)) if alt_tried else ""))
             else:
                 R.line("Kayıt durumu", "belirsiz (registered=%s)" % reg, WARN)
 
@@ -2474,6 +2548,24 @@ def main():
                                data.get("board_id")))
             elif reg is True:
                 R.note("Kayıtlı ama 'data' alanı boş döndü.")
+            if reg is False and alt:
+                on_board = any(n["mac"].lower() == alt[0] for n in nics if n.get("mac"))
+                R.finding(FAIL, "Tahta ETA'da FARKLI BİR MAC ile kayıtlı (%s)" % alt[0],
+                          "Kimlik MAC'i %s ile kayıt yok, ama %s (%s) ile kayıt var: "
+                          "%s / %s / %s · birim '%s' · board_id %s.\n"
+                          "YENİDEN KAYDETMEYİN: ETA Kayıt'ın kayıt ekranı yeni bir kayıt "
+                          "(yeni board_id) oluşturur, %s'li kayıt sahipsiz kalır (envanterde "
+                          "yinelenen/pasif tahta). ETA Kayıt'ın Düzenle'si de kullanılamaz; "
+                          "yalnızca mevcut MAC kayıtlıyken görünür.\nÇÖZÜM: %s"
+                          "ya da ETA/Lider operatöründen board_id %s kaydının MAC'ini %s "
+                          "olarak güncellemesini isteyin." % (
+                              query_mac, alt[0], alt[1], data.get("city_name"),
+                              data.get("town_name"), data.get("school_name"),
+                              data.get("unit_name"), data.get("board_id"), alt[0],
+                              ("%s MAC'li kartın yeniden kimlik kartı seçilmesini sağlayın "
+                               "(sürücü yüklü mü, BIOS'ta açık mı, arayüz sırası) " % alt[0])
+                              if on_board else "",
+                              data.get("board_id"), query_mac))
 
     # Lider kayıt sunucusu hatası: operatöre iletilecek bilgilerle
     reg_err = D.get("registration_errors") or registration_request_errors(srv_start)

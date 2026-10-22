@@ -197,8 +197,14 @@ Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
 - Tüm ağ arayüzleri (MAC, sürücü, veri yolu, kablosuz/kablolu, durum).
 - Seçilen **kimlik MAC'i** ve `etainfo.network`'ün gerçek sonucu (çökerse yakalar
   — bu başlı başına bir teşhistir).
-- **Klon tespiti:** kayıt anındaki MAC (DB `params`) ile **canlı donanım MAC**
-  karşılaştırması. Farklıysa imaj başka donanıma kopyalanmış olabilir.
+- **Kayıt MAC'i karşılaştırması:** Ahenk'in kayıt anındaki MAC'i (DB `params`) ile
+  bugünkü **kimlik MAC'i** karşılaştırılır. Farklıysa iki durum ayrılır:
+  - Kayıt MAC'i **bu tahtadaki başka bir kartın** MAC'iyse → **WARN** "kimlik ağ
+    kartı değişmiş (aynı tahta, klon değil)": iki PCI kablolu kart arasında seçim
+    değişmiş (sürücü yüklenmemesi, arayüz adı/sıra değişimi, yeni imaj). UUID MAC'e
+    bağlı olmadığından yeniden kayıt gerekmez.
+  - Kayıt MAC'i **bu tahtada yoksa** → **FAIL** "klon imaj ya da ağ kartı/anakart
+    değişimi"; iki olasılık ve çözümleri ayrı ayrı açıklanır.
 - **Canlı bağlantı doğrulaması** (aşağıdaki bölüme bakın).
 
 ### 4) Bağlantı, Temel TCP ve DNS
@@ -217,7 +223,19 @@ başarılı yayın ve son hata.
 
 ### 5) Kayıt Durumu
 Tahtanın **kayıtlı olduğu okul / şehir / ilçe / birim** bilgisini ve kayıt
-durumunu gösterir.
+durumunu gösterir. Bilgiler her çalıştırmada, tahtanın kimlik MAC'iyle ETA
+sunucusuna yapılan `GET /api/board/check?mac=…` sorgusundan (ETA Kayıt'ın kendi
+sorgusu) canlı alınır.
+
+**Farklı MAC ile kayıt:** Kimlik MAC'iyle kayıt yoksa, Ahenk'in kayıt anındaki
+MAC'i ve tahtadaki diğer kablolu kartların MAC'leri de sorgulanır. Biriyle kayıt
+bulunursa okul/birim bilgileri o kayıttan gösterilir ve **FAIL** "Tahta ETA'da
+FARKLI BİR MAC ile kayıtlı" verilir: **yeniden kaydetmeyin** — ETA Kayıt'ın kayıt
+ekranı yeni bir kayıt (yeni board_id) oluşturur, eski kayıt sahipsiz kalır; ETA
+Kayıt'ın Düzenle'si de yalnızca mevcut MAC kayıtlıyken görünür. Çözüm: eski MAC'li
+kartın yeniden kimlik kartı seçilmesini sağlamak ya da operatörden ilgili
+board_id kaydının MAC'ini güncellemesini istemek. Hiçbirinde kayıt yoksa bulgu
+bunu da belirtir. (`--mac` verilmişse ek sorgu yapılmaz.)
 
 ### 6) Sistem / Dağıtım / Çekirdek
 Dağıtım ve alt sürüm (ör. *Pardus ETAP GNU/Linux 23*), `lsb_release`, çekirdek
@@ -376,7 +394,9 @@ listelenir.
 | Belirti | Bölüm | Olası neden |
 |---|---|---|
 | `ConsumerBusy` **güncel** (servis restart sonrası, sonrasında başarı yok) | 3 | **Aktif klon imaj** — aynı UUID başka makinede |
-| Kayıt MAC ≠ canlı MAC | 3 | İmaj farklı donanıma kopyalanmış |
+| Kayıt MAC'i bu tahtadaki başka bir kartın MAC'i | 3 | **Kimlik kartı seçimi değişmiş** — aynı tahta, klon değil |
+| Kayıt MAC'i bu tahtada yok | 3 | **Klon imaj** ya da **ağ kartı/anakart değişimi** |
+| ETA'da kimlik MAC'iyle yok, başka MAC ile kayıtlı | 5 | **Farklı MAC ile kayıt** — yeniden kaydetmeyin, MAC'i güncelletin |
 | Kimlik MAC'i belirlenemiyor / `etainfo` hatası | 3 | Kablolu ethernet/sürücü yok → kayıt çöker |
 | Kablolu arayüzde carrier/IP yok | 4 | **Fiziksel/DHCP** sorunu — hiçbir sunucuya ulaşılamaz |
 | Broker portuna TCP açılamıyor | 4 | **Güvenlik duvarı / yanlış adres / sunucu kapalı** → subscribe olamaz |
