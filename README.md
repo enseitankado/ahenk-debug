@@ -18,17 +18,18 @@ curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.s
 1. [Hızlı başlangıç](#hızlı-başlangıç)
 2. [Komut satırı seçenekleri](#komut-satırı-seçenekleri)
 3. [Çıkış kodları](#çıkış-kodları)
-4. [Arka plan: Ahenk kayıt & bağlantı mimarisi](#arka-plan-ahenk-kayıt--bağlantı-mimarisi)
-5. [Rapor bölümleri](#rapor-bölümleri)
-6. [Canlı bağlantı doğrulaması](#canlı-bağlantı-doğrulaması-bayat-log--güncel-hata)
-7. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)
-8. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
-9. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
-10. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
-11. [JSON çıktısı](#json-çıktısı)
-12. [Gereksinimler ve sınırlar](#gereksinimler-ve-sınırlar)
-13. [Veri kaynakları](#veri-kaynakları)
-14. [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
+4. [Otomatik düzeltme (--fix)](#otomatik-düzeltme---fix)
+5. [Arka plan: Ahenk kayıt & bağlantı mimarisi](#arka-plan-ahenk-kayıt--bağlantı-mimarisi)
+6. [Rapor bölümleri](#rapor-bölümleri)
+7. [Canlı bağlantı doğrulaması](#canlı-bağlantı-doğrulaması-bayat-log--güncel-hata)
+8. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)
+9. [Faz (Faz 1/2/3) tespiti](#faz-faz-123-tespiti)
+10. [Arıza sınıflarını ayırt etme](#arıza-sınıflarını-ayırt-etme)
+11. [Sık görülen senaryolar ve çözümleri](#sık-görülen-senaryolar-ve-çözümleri)
+12. [JSON çıktısı](#json-çıktısı)
+13. [Gereksinimler ve sınırlar](#gereksinimler-ve-sınırlar)
+14. [Veri kaynakları](#veri-kaynakları)
+15. [Gizlilik ve güvenlik](#gizlilik-ve-güvenlik)
 
 ---
 
@@ -68,6 +69,7 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `--out DOSYA` | Raporu (renksiz) belirtilen dosyaya da yazar |
 | `--db YOL` | `ahenk.db` yolunu elle verir (varsayılan: conf'taki `BASE/dbPath`) |
 | `--mac MAC` | Kayıt durumu sorgusunu **bu makinenin değil**, verilen MAC için yapar (uzaktaki bir tahtayı kontrol için) |
+| `--fix` | Bulunan sorunları **otomatik düzeltir**, ardından yeniden teşhis eder; bkz. [Otomatik düzeltme](#otomatik-düzeltme---fix) |
 | `--no-send` | Otomatik gönderimi kapatır (varsayılan: rapor paste.rs+ntfy.sh ile operatöre **otomatik** gönderilir; bkz. [Çıktıyı operatöre gönderme](#çıktıyı-operatöre-gönderme)) |
 | `--renk=NE-ZAMAN` | Renkli çıktı: `otomatik` (varsayılan; yalnız terminalde), `her-zaman` ya da `hicbir-zaman`. `NO_COLOR` ortam değişkeni tanımlıysa renk kapanır |
 | `-h`, `--help`, `--yardim` | Türkçe yardımı (seçenekler, örnekler, çıkış kodları) gösterir; root gerekmez |
@@ -85,10 +87,55 @@ mesajı yollar, komut aboneliğine dokunmaz.
 | `1` | En az bir **WARN** var, **FAIL** yok |
 | `2` | En az bir **FAIL** (kritik) bulgu var |
 | `3` | Root değil — araç çalışmadan çıktı (sudo ile yeniden deneyin) |
+| `4` | `--fix` işlem yaptı ama düzeltme sonrası **FAIL** sürüyor |
 | `64` | Hatalı kullanım (tanınmayan seçenek, eksik argüman) |
 | `130` | Ctrl+C ile kesildi |
 
 Bu sayede araç izleme/otomasyon içinde de kullanılabilir.
+
+---
+
+## Otomatik düzeltme (`--fix`)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --fix
+```
+
+Araç önce normal teşhisi yapar, bulunan sorunları **onay sormadan** aşağıdaki sırayla
+düzeltir, sonra teşhisi **yeniden** çalıştırır. Raporun başında "Otomatik düzeltme"
+bölümü yapılan her işlemi (yapıldı / başarısız / atlandı / düzeltilemez) ve önce/sonra
+KRİTİK–UYARI sayılarını gösterir; altındaki rapor **düzeltme sonrası** durumdur. İşlemler
+sürerken ilerleme ekrana (stderr) yazılır; operatöre giden bildirim de düzeltme özetini
+içerir. `--fix` modu sistemi değiştirdiği için "kalıcı dosya yazmaz" ilkesinin tek
+istisnasıdır.
+
+| Sıra | Durum (teşhis) | İşlem |
+|---|---|---|
+| 1 | Kimlik arayüzü açık ama IP yok | DHCP yenileme (`nmcli device reapply`/yeniden bağlan; yoksa `dhclient`) |
+| 2 | Disk ≥%90 | `apt-get clean`, `journalctl --vacuum-size=50M`, eski Ahenk günlükleri (`ahenk.log.*.gz`) |
+| 3 | Yarım kalmış paket işlemi | `dpkg --configure -a` |
+| 4 | Ahenk kurulu değil (ETA kaydı varsa) / eski; eta-register yok/eski; sertifika dosyası yok; etainfo çöküyor; crash-loop/ImportError | `apt-get update` + `install` / `install --reinstall` (`ahenk`, `eta-register`, `ahenk-eba-cert`, `etainfo eta-info`) |
+| 5 | Saat NTP ile senkron değil | `timedatectl set-ntp true` + timesyncd yeniden başlatma |
+| 6 | **Klon imaj** (güncel ConsumerBusy), **veritabanı bozuk** ya da **sunucu kimliği tanımıyor** (aktif test oturumu **iki kez** reddetti) | Yedek → servisi durdur → **Ahenk kimliğini sıfırla** (DB silinir; `ahenk.conf` uid/parola/host ve `messaging.conf` Pulsar alanları boşaltılır) → yeni UUID ile yeni Lider kaydı |
+| 6 | `ahenk.conf` UID ≠ DB JID | Yedek → `ahenk.conf` veritabanına eşitlenir |
+| 7 | Servis `masked` / `disabled` | `systemctl unmask` / `enable` |
+| 7 | Servis çalışmıyor, Ahenk bekleme aşamasında (broker erişilebilir) ya da paket/kimlik değişti | `systemctl restart ahenk.service`, ardından en çok 90 sn sonuç beklenir (Pulsar bağlantısı / Lider kaydı / yeniden durma) |
+| 7 | Lider kaydı **HTTP 5xx** (ya da kimlik sıfırlandı) | Servis **3 kez** yeniden başlatılarak kayıt yeniden denenir; hepsi 5xx ise "sunucu tarafı" olarak bildirilir |
+
+**Kimlik sıfırlanmaz:** kayıt MAC'i tahtada yok ama ConsumerBusy de yoksa (klon mu
+donanım değişimi mi ayırt edilemez) — gereksiz kayıp olmaması için yalnızca bildirilir.
+
+**Tahtadan düzeltilemeyenler** (raporda nedeni ve yapılacak işle "düzeltilemez" diye
+listelenir): kablo/link yok, ağ geçidi yok, DNS yok/çözemiyor, broker portu kapalı
+(güvenlik duvarı), TLS kurulamıyor (proxy), ETA API'ye erişilemiyor, Pulsar uygulama
+katmanı yanıt vermiyor, güncel `not_authorized`, Lider kaydı 3 denemede de 5xx, tahta
+ETA'da kayıtlı değil (okul/derslik seçimi gerekir), ETA kaydı farklı MAC ile (MAC
+yalnızca sunucuda güncellenebilir). ETA ve Lider sunucularındaki kayıtlara dokunulmaz.
+
+**Yedekler:** kimlik dosyalarını değiştiren her işlemden önce `ahenk.conf`,
+`messaging.conf` ve `ahenk.db`, `/var/backups/ahenk-debug/<YYYYmmdd-HHMMSS>/` altına
+kopyalanır; **son 5 yedek** tutulur. Geri almak için dosyaları yerine kopyalayıp
+`sudo systemctl restart ahenk.service` çalıştırın.
 
 ---
 

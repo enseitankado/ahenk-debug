@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # ahenk-debug önyükleyici — indirme/kurulum gerektirmez.
-# Aracı doğrudan depodan çekip çalıştırır (kalıcı dosya yazmaz).
+# Aracı doğrudan depodan çekip çalıştırır (kalıcı dosya yazmaz; --fix hariç).
 #
 # Kullanım:
 #   curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash
 #   curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --json
 #   curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --no-net
+#   curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --fix
 #
 # Not: Araç root ister; bu yüzden 'sudo bash' ile çağırın.
 #

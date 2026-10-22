@@ -133,6 +133,7 @@ class Report:
         self.findings = []          # (severity, title, detail)
         self.data = {}              # ham veri (json çıktısı için)
         self.timeline = []          # [(datetime, metin)]
+        self.fix = None             # --fix: {"before": (fail, warn), "actions": [...]}
 
     # --- bölüm/satır ---
     def section(self, title):
@@ -169,6 +170,26 @@ class Report:
             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             platform.node()))
         out.append(bar)
+        if self.fix is not None:
+            out.append("")
+            out.append(cyan("▸ Otomatik düzeltme (--fix)"))
+            bf, bw = self.fix["before"]
+            af = sum(1 for f in self.findings if f[0] == FAIL)
+            aw = sum(1 for f in self.findings if f[0] == WARN)
+            out.append("  Önce: %d KRİTİK, %d UYARI  →  Sonra: %d KRİTİK, %d UYARI" %
+                       (bf, bw, af, aw))
+            if self.fix.get("backup"):
+                out.append(grey("  Yedek: %s" % self.fix["backup"]))
+            badge = {"yapıldı": OK, "başarısız": FAIL, "atlandı": INFO,
+                     "düzeltilemez": WARN}
+            for st, title, detail in self.fix["actions"]:
+                out.append("  %s %s — %s" % (_BADGE[badge.get(st, INFO)], title, st))
+                if detail:
+                    for d in str(detail).split("\n"):
+                        out.append("        %s" % grey(d))
+            if not self.fix["actions"]:
+                out.append("  (düzeltilecek bir şey bulunamadı)")
+            out.append(grey("  Aşağıdaki rapor düzeltme SONRASI durumdur."))
         for title, lines in self.sections:
             out.append("")
             out.append(cyan("▸ " + title))
@@ -416,6 +437,8 @@ def analyze_logs(max_lines=6000):
         "reg_success":      re.compile(r"Registration successful|already registered", re.I),
         "publish_ok":       re.compile(r"Message published successfully", re.I),
         "pulsar_connected": re.compile(r"Connected to Pulsar|Pulsar connection successful", re.I),
+        "pulsar_attempt":   re.compile(r"Pulsar connection retry \d+/\d+", re.I),
+        "pulsar_wait":      re.compile(r"Pulsar connection failed\. Retrying in \d+ minutes", re.I),
         "received":         re.compile(r"Received message|Fired event", re.I),
         "tls_err":          re.compile(r"certificate|TLS|SSL", re.I),
         "stopping":         re.compile(r"Stopping the service|Ahenk is stopping|Stopping Ahenk service|systemctl stop ahenk", re.I),
@@ -1428,6 +1451,13 @@ def build_send_summary(D, findings):
     lc = D.get("live_connection") or {}
     lines.append("servis: %s | canlı TCP: %s | Lider kaydı: %s" % (
         D.get("service_active"), lc.get("count"), lider_status_text(D)))
+    fx = D.get("fix")
+    if fx:
+        st = [a["status"] for a in fx["actions"]]
+        lines.append("DÜZELTME (--fix): %d işlem — %d yapıldı, %d başarısız, %d düzeltilemez; "
+                     "önce %d FAIL/%d WARN" % (len(st), st.count("yapıldı"),
+                                                st.count("başarısız"), st.count("düzeltilemez"),
+                                                fx["before"]["fail"], fx["before"]["warn"]))
     lines.append("BULGU: %d FAIL, %d WARN" % (n_fail, n_warn))
     # En önemli birkaç bulguyu ekle
     order = {"FAIL": 0, "WARN": 1}
@@ -1553,6 +1583,13 @@ _HELP_OPTIONS = [
         ("    --no-send", (), "", "raporun operatöre otomatik gönderimini kapat "
                                   "(varsayılan: paste.rs + ntfy.sh ile gönderilir)"),
     ]),
+    ("Düzeltme:", [
+        ("    --fix", (), "", "bulunan sorunları otomatik düzelt: ağ (DHCP), disk, dpkg, "
+                              "paketleri kur/güncelle, saat, servisi etkinleştir/başlat, "
+                              "Lider kaydını gerekirse 3 kez yeniden dene, klon/sunucu "
+                              "reddinde Ahenk kimliğini sıfırla (yedekli); ardından yeniden "
+                              "teşhis et. Yedekler: /var/backups/ahenk-debug (son 5)"),
+    ]),
     ("Testler ve kaynaklar:", [
         ("    --no-net", (), "", "ağ testlerini (DNS/TCP/TLS, aktif Pulsar) atla; "
                                  "yalnız yerel kontroller yapılır"),
@@ -1569,6 +1606,8 @@ _HELP_EXAMPLES = [
     (f"curl -fsSL {RUN_URL} | sudo bash -s -- --no-net",
      "Aynısı, ağ testleri olmadan (hızlı, yalnız yerel kontroller)."),
     ("sudo ./ahenk_debug.py", "Yerel dosyadan tam rapor."),
+    (f"curl -fsSL {RUN_URL} | sudo bash -s -- --fix",
+     "Teşhis et, bulunan sorunları otomatik düzelt, yeniden teşhis et."),
     ("sudo ./ahenk_debug.py --out rapor.txt",
      "Raporu ekrana basarken renksiz olarak dosyaya da yaz."),
     ("sudo ./ahenk_debug.py --json > ahenk.json",
@@ -1586,6 +1625,7 @@ _HELP_EXIT = [
     (1, "en az bir UYARI var, KRİTİK yok"),
     (2, "en az bir KRİTİK bulgu var"),
     (3, "root değil; araç çalışmadan çıktı (sudo ile yeniden deneyin)"),
+    (4, "--fix işlem yaptı ama düzeltme sonrası KRİTİK bulgu sürüyor"),
     (64, "hatalı kullanım (tanınmayan seçenek, eksik argüman)"),
     (130, "Ctrl+C ile kesildi"),
 ]
@@ -1694,36 +1734,409 @@ def _set_color_mode(argv):
         _USE_COLOR = False
 
 
-def main():
-    _set_color_mode(sys.argv[1:])
-    ap = _Parser(prog=PROG, add_help=False)
-    ap.add_argument("-h", "--help", "--yardim", action="help")
-    ap.add_argument("--renk", "--color", default="otomatik",
-                    choices=("otomatik", "her-zaman", "hicbir-zaman",
-                             "auto", "always", "never"))
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--no-net", action="store_true")
-    ap.add_argument("--out", metavar="DOSYA")
-    ap.add_argument("--db", default=None)
-    ap.add_argument("--mac", metavar="MAC", default=None)
-    ap.add_argument("--no-send", action="store_true")
-    args = ap.parse_args()
+# ----------------------------------------------------------------------------
+# Otomatik düzeltme (--fix)
+# ----------------------------------------------------------------------------
+BACKUP_ROOT = "/var/backups/ahenk-debug"
+BACKUP_KEEP = 5
+LIDER_RETRY = 3          # Lider kaydı HTTP 5xx iken servis yeniden başlatma denemesi
+FIX_WAIT = 90            # sn; başlatma sonrası kayıt/bağlantı bekleme
+APT_OPTS = ["-y", "-o", "Dpkg::Options::=--force-confdef",
+            "-o", "Dpkg::Options::=--force-confold"]
 
-    # --- ZORUNLU ROOT ---
-    # Araç; ahenk.conf/messaging.conf (0600), parolalar, aktif Pulsar probe ve
-    # süreç soketleri için root yetkisi ister. Root değilse çalıştırmayı reddet.
-    if not is_root():
-        sys.stderr.write(
-            red("HATA: ") + "Bu araç root (sudo) yetkisiyle çalıştırılmalıdır.\n"
-            "  ahenk.conf/messaging.conf (0600), parolalar, aktif bağlantı testi ve\n"
-            "  süreç soketleri yalnızca root tarafından okunabilir.\n\n"
-            "  Kurulumsuz (depodan) çalıştırma:\n"
-            "    curl -fsSL https://raw.githubusercontent.com/enseitankado/"
-            "ahenk-debug/main/run.sh | sudo bash\n"
-            "  Yerel dosyadan:\n"
-            "    sudo python3 ahenk_debug.py\n")
-        return 3
 
+def fix_run(cmd, timeout=600):
+    """Düzeltme komutu: etkileşimsiz ortamda çalıştır, (rc, stdout, stderr)."""
+    env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", LC_ALL="C")
+    try:
+        p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True,
+                           text=True, timeout=timeout, env=env)
+        return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "zaman aşımı (%d sn)" % timeout
+    except Exception as e:
+        return -1, "", str(e)
+
+
+def fix_progress(msg):
+    sys.stderr.write(grey("  → ") + msg + "\n")
+    sys.stderr.flush()
+
+
+def last_line(text):
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else ""
+
+
+def messaging_conf_path():
+    return os.path.join(CONFIG_D, "messaging.conf")
+
+
+def backup_ahenk_files(db_path):
+    """ahenk.conf, messaging.conf ve ahenk.db'yi zaman damgalı dizine kopyala; son
+    BACKUP_KEEP yedeği tut. Dönüş: yedek dizini."""
+    d = os.path.join(BACKUP_ROOT, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    for f in (AHENK_CONF, messaging_conf_path(), db_path):
+        if f and os.path.exists(f):
+            shutil.copy2(f, os.path.join(d, os.path.basename(f)))
+    dirs = sorted(x for x in os.listdir(BACKUP_ROOT)
+                  if os.path.isdir(os.path.join(BACKUP_ROOT, x)))
+    for old in dirs[:-BACKUP_KEEP]:
+        shutil.rmtree(os.path.join(BACKUP_ROOT, old), ignore_errors=True)
+    return d
+
+
+def edit_conf(path, changes):
+    """INI dosyasında yalnızca var olan bölümlerdeki anahtarları değiştir."""
+    import configparser
+    c = configparser.ConfigParser(interpolation=None)
+    c.read(path)
+    for sec, kv in changes.items():
+        if not c.has_section(sec):
+            continue
+        for k, v in kv.items():
+            c.set(sec, k, v)
+    with open(path, "w") as f:
+        c.write(f)
+    os.chmod(path, 0o600)
+
+
+def db_registered(db_path):
+    reg = (load_db(db_path).get("registration") or {})
+    return str(reg.get("registered")) if reg else None
+
+
+def wait_ahenk_outcome(db_path, timeout=FIX_WAIT):
+    """Servis başlatıldıktan sonra sonucu bekle: 'connected' (canlı Pulsar soketi),
+    'registered' (Lider kaydı tamamlandı, bağlantı henüz yok), 'stopped' (Ahenk
+    kendini durdurdu) ya da 'timeout' (servis çalışıyor, sonuç yok)."""
+    t0 = time.monotonic()
+    state = "timeout"
+    while time.monotonic() - t0 < timeout:
+        time.sleep(3)
+        cp, _, _ = load_config()
+        if live_broker_connections(cp)["count"] > 0:
+            return "connected"
+        if db_registered(db_path) == "1":
+            state = "registered"
+        rc, act, _ = run("systemctl is-active ahenk.service")
+        if act not in ("active", "activating") and time.monotonic() - t0 > 5:
+            return "stopped" if state != "registered" else "registered"
+    return state
+
+
+OUTCOME_TEXT = {
+    "connected": "Ahenk Pulsar'a bağlandı",
+    "registered": "Lider kaydı tamamlandı (Pulsar bağlantısı henüz kurulmadı)",
+    "stopped": "Ahenk yeniden kendini durdurdu",
+    "timeout": "servis çalışıyor, %d sn içinde bağlantı kurulmadı (Ahenk bekleme "
+               "aşamasında olabilir)" % FIX_WAIT,
+}
+
+
+def run_fix(args, R, D):
+    """--fix: ilk teşhise (D) göre düzeltmeleri sırayla uygula, yeniden teşhis et.
+    Dönüş: (yeni Report, yeni D, işlem yapıldı mı)."""
+    actions = []                         # (durum, başlık, ayrıntı)
+
+    def act(status, title, detail=""):
+        actions.append((status, title, detail))
+        fix_progress("%s — %s" % (title, status))
+
+    before = (sum(1 for f in R.findings if f[0] == FAIL),
+              sum(1 for f in R.findings if f[0] == WARN))
+    sys.stderr.write(bold("\n--fix: düzeltmeler uygulanıyor (bu birkaç dakika "
+                          "sürebilir)...\n"))
+    db_path = (D.get("db") or {}).get("path") or DEFAULT_DB
+    eta_res = (D.get("eta_api") or {}).get("result") or {}
+    eta_alt = (D.get("eta_api") or {}).get("alt")
+    eta_ok = eta_res.get("registered") is True or bool(eta_alt)
+    reg_err = D.get("registration_errors") or {}
+    lider_5xx = any(str(c).startswith("5") for c in reg_err.get("codes", []))
+    backup_dir = None
+    restart_needed = False
+
+    # 1) Ağ: arayüz açık ama IP yok → DHCP yenile
+    if D.get("no_carrier"):
+        act("düzeltilemez", "Kablo/link yok (%s)" % D["no_carrier"],
+            "Fiziksel bağlantı: kabloyu, prizi ve switch portunu kontrol edin.")
+    elif D.get("iface_no_ip"):
+        iface = D["iface_no_ip"]
+        if shutil.which("nmcli"):
+            rc, o, e = fix_run(["nmcli", "device", "reapply", iface], 60)
+            if rc != 0:
+                fix_run(["nmcli", "device", "disconnect", iface], 30)
+                rc, o, e = fix_run(["nmcli", "device", "connect", iface], 60)
+        elif shutil.which("dhclient"):
+            fix_run(["dhclient", "-r", iface], 30)
+            rc, o, e = fix_run(["dhclient", "-1", iface], 60)
+        else:
+            rc, o, e = -1, "", "nmcli/dhclient yok"
+        got = False
+        for _ in range(10):
+            lk = nic_link_status(iface)
+            if lk and lk.get("has_ip"):
+                got = True
+                break
+            time.sleep(2)
+        act("yapıldı" if got else "başarısız", "DHCP yenilendi (%s)" % iface,
+            ("IP: %s" % nic_link_status(iface)["ip"]) if got else
+            "IP alınamadı: %s — DHCP sunucusunu/switch'i kontrol edin." % (e or o or rc))
+
+    # 2) Disk dolu → güvenli temizlik
+    full = [p for p, du in (D.get("disk") or {}).items() if du and du.get("pct", 0) >= 90]
+    if full:
+        fix_run(["apt-get", "clean"], 120)
+        fix_run(["journalctl", "--vacuum-size=50M"], 120)
+        removed = 0
+        for f in glob.glob("/var/log/ahenk.log.*.gz"):
+            try:
+                os.remove(f)
+                removed += 1
+            except OSError:
+                pass
+        after = {p: disk_usage_info(p) for p in full}
+        still = [p for p, du in after.items() if du and du["pct"] >= 90]
+        act("yapıldı" if not still else "başarısız", "Disk temizliği (%s)" % ", ".join(full),
+            "apt önbelleği, journal (50 MB'a), %d eski Ahenk günlüğü silindi. Sonra: %s%s" % (
+                removed, ", ".join("%s %%%.0f" % (p, du["pct"]) for p, du in after.items() if du),
+                " — hâlâ dolu, kullanıcı dosyalarını elle inceleyin." if still else ""))
+
+    # 3) Yarım kalmış dpkg işlemi
+    if D.get("dpkg_audit"):
+        rc, o, e = fix_run(["dpkg", "--configure", "-a"], 900)
+        act("yapıldı" if rc == 0 else "başarısız", "Yarım kalmış paket işlemleri tamamlandı "
+            "(dpkg --configure -a)", "" if rc == 0 else last_line(e or o))
+
+    # 4) Paketler
+    install, reinstall = [], []
+    ahenk_missing = not D.get("ahenk_version")
+    if ahenk_missing:
+        if eta_ok:
+            install.append("ahenk")
+        else:
+            act("atlandı", "Ahenk kurulmadı",
+                "Tahta ETA'da kayıtlı değil; Lider kaydı ETA kaydına bağlı olduğundan önce "
+                "ETA Kayıt ile kayıt yapılmalı (aşağıya bakın).")
+    elif (D.get("ahenk_repo") or {}).get("outdated"):
+        install.append("ahenk")
+    er = D.get("eta_register_repo") or {}
+    if not er.get("installed") or er.get("outdated"):
+        install.append("eta-register")
+    if D.get("pulsar_ca_missing"):
+        reinstall.append("ahenk-eba-cert")
+    if D.get("etainfo_failed"):
+        reinstall += ["etainfo", "eta-info"]
+    if (D.get("import_error") or (D.get("service_nrestarts") or 0) >= 3) and not ahenk_missing:
+        reinstall.append("ahenk")
+    if install or reinstall:
+        rc, o, e = fix_run(["apt-get", "update"], 300)
+        act("yapıldı" if rc == 0 else "başarısız", "Paket listeleri güncellendi (apt update)",
+            "" if rc == 0 else last_line(e or o))
+        if install:
+            rc, o, e = fix_run(["apt-get", "install"] + APT_OPTS + install, 900)
+            act("yapıldı" if rc == 0 else "başarısız", "Kuruldu/güncellendi: %s" %
+                ", ".join(install), "" if rc == 0 else last_line(e or o))
+            restart_needed = restart_needed or ("ahenk" in install and rc == 0)
+        if reinstall:
+            rc, o, e = fix_run(["apt-get", "install", "--reinstall"] + APT_OPTS + reinstall, 900)
+            act("yapıldı" if rc == 0 else "başarısız", "Yeniden kuruldu: %s" %
+                ", ".join(reinstall), "" if rc == 0 else last_line(e or o))
+            restart_needed = restart_needed or ("ahenk" in reinstall and rc == 0)
+
+    # 5) Saat
+    if D.get("ntp_sync") not in (None, "yes"):
+        fix_run(["timedatectl", "set-ntp", "true"], 30)
+        fix_run(["systemctl", "restart", "systemd-timesyncd"], 30)
+        ok_sync = False
+        for _ in range(10):
+            time.sleep(3)
+            rc, sync, _ = run("timedatectl show -p NTPSynchronized --value")
+            if sync == "yes":
+                ok_sync = True
+                break
+        act("yapıldı" if ok_sync else "başarısız", "Saat senkronu (NTP) açıldı",
+            "" if ok_sync else "30 sn içinde senkron olmadı; NTP (UDP 123) erişimini kontrol "
+                               "edin.")
+
+    # 6) Kimlik: sıfırlama gerekçeleri (yalnızca güçlü kanıt)
+    reset_why = None
+    if os.path.exists(AHENK_CONF) and D.get("ahenk_version"):
+        integ = (D.get("db") or {}).get("integrity")
+        if D.get("consumer_busy_current"):
+            reset_why = ("KLON İMAJ: aynı UUID başka bir tahtada aktif (güncel "
+                         "ConsumerBusy)")
+        elif os.path.exists(db_path) and integ not in (None, "ok", "dosya yok") and (
+                not str(integ).startswith("hata:")
+                or re.search(r"malformed|not a database", str(integ), re.I)):
+            # Yalnızca gerçek bozulma: kilitli/geçici açılamayan DB'ye dokunulmaz
+            reset_why = "Ahenk veritabanı bozuk (integrity=%s)" % integ
+        elif str(D.get("registered")) == "1" and \
+                (D.get("active_probe") or {}).get("auth_ok") is False:
+            fix_progress("Pulsar sunucusunun reddi ikinci kez doğrulanıyor...")
+            cp2, _, _ = load_config()
+            p2 = active_pulsar_probe(cp2, registered="1")
+            if p2.get("auth_ok") is False:
+                reset_why = ("Lider/Pulsar sunucusu tahtanın kimliğini TANIMIYOR (oturum iki "
+                             "kez reddedildi; kayıt Lider'de silinmiş/değişmiş)")
+            else:
+                act("atlandı", "Kimlik sıfırlanmadı",
+                    "Sunucu reddi ikinci denemede tekrarlanmadı (geçici olabilir).")
+        reg_macs = D.get("registered_macs") or []
+        live_mac = (D.get("live_mac") or "").lower()
+        local_macs = {(n.get("mac") or "").lower() for n in (D.get("nics") or [])}
+        if not reset_why and reg_macs and live_mac and live_mac not in reg_macs \
+                and not any(m in local_macs for m in reg_macs):
+            act("düzeltilemez", "Kimlik sıfırlanmadı (kayıt MAC'i bu tahtada yok)",
+                "Klon imaj mı donanım değişimi mi ayırt edilemiyor; sıfırlama gereksiz kayıp "
+                "yaratabilir. ConsumerBusy görülürse --fix kimliği sıfırlar; donanım "
+                "değiştiyse operatörden ETA kaydının MAC'ini güncellemesini isteyin.")
+
+    if reset_why or D.get("conf_db_mismatch"):
+        try:
+            backup_dir = backup_ahenk_files(db_path)
+        except Exception as e:
+            act("başarısız", "Yedek alınamadı — kimlik işlemleri yapılmadı", str(e))
+            reset_why = None
+            D["conf_db_mismatch"] = False
+
+    if reset_why:
+        fix_run(["systemctl", "stop", "ahenk.service"], 60)
+        try:
+            if os.path.exists(db_path):
+                os.remove(db_path)
+            for pid in ("/var/run/ahenkd.pid", "/run/ahenkd.pid"):
+                if os.path.exists(pid):
+                    os.remove(pid)
+            edit_conf(AHENK_CONF, {"CONNECTION": {"uid": "", "password": "", "host": ""},
+                                   "MACHINE": {"user_disabled": "false"}})
+            if os.path.exists(messaging_conf_path()):
+                edit_conf(messaging_conf_path(), {"PULSAR": {
+                    "pulsar_host": "", "pulsar_port": "", "pulsar_use_tls": "",
+                    "tls_trust_certs_file_path": ""}})
+            act("yapıldı", "Ahenk kimliği sıfırlandı (yeni UUID ile yeni Lider kaydı "
+                "yapılacak)", "Neden: %s\nYedek: %s\nNot: eski ajan kaydı Lider'de sahipsiz "
+                "kalır." % (reset_why, backup_dir))
+            restart_needed = True
+        except Exception as e:
+            act("başarısız", "Ahenk kimliği sıfırlanamadı", "%s (yedek: %s)" % (e, backup_dir))
+    elif D.get("conf_db_mismatch"):
+        reg = (load_db(db_path).get("registration") or {})
+        if reg.get("jid"):
+            try:
+                edit_conf(AHENK_CONF, {"CONNECTION": {"uid": reg["jid"],
+                                                      "password": reg.get("password") or ""}})
+                act("yapıldı", "ahenk.conf kimliği veritabanına eşitlendi",
+                    "uid=%s (yedek: %s)" % (reg["jid"], backup_dir))
+                restart_needed = True
+            except Exception as e:
+                act("başarısız", "ahenk.conf eşitlenemedi", str(e))
+
+    # 7) Servis
+    if D.get("ahenk_version") or "ahenk" in install:
+        _, en, _ = run("systemctl is-enabled ahenk.service")
+        if en == "masked":
+            rc, o, e = fix_run(["systemctl", "unmask", "ahenk.service"], 30)
+            act("yapıldı" if rc == 0 else "başarısız", "Servis maskesi kaldırıldı (unmask)",
+                "" if rc == 0 else last_line(e or o))
+            _, en, _ = run("systemctl is-enabled ahenk.service")
+        if en != "enabled":
+            rc, o, e = fix_run(["systemctl", "enable", "ahenk.service"], 30)
+            act("yapıldı" if rc == 0 else "başarısız", "Servis açılışta başlayacak şekilde "
+                "etkinleştirildi", "" if rc == 0 else last_line(e or o))
+        _, active, _ = run("systemctl is-active ahenk.service")
+        backoff = D.get("backoff") and (D.get("net_basics") or {}).get("broker_tcp_open")
+        need_start = active != "active" or restart_needed or bool(backoff)
+        retry = LIDER_RETRY if (reset_why or (lider_5xx and str(D.get("registered")) != "1")) \
+            else 1
+        if need_start:
+            why = ("bekleme aşaması atlanıyor (deneme %s/%s, sonraki deneme %s)" % (
+                D["backoff"]["attempt"], D["backoff"]["max"], D["backoff"]["next"])
+                if backoff and active == "active" and not restart_needed else "")
+            for i in range(1, retry + 1):
+                t_start = datetime.datetime.now() - datetime.timedelta(seconds=1)
+                rc, o, e = fix_run(["systemctl", "restart", "ahenk.service"], 60)
+                if rc != 0:
+                    act("başarısız", "Ahenk servisi başlatılamadı", last_line(e or o))
+                    break
+                fix_progress("Ahenk başlatıldı%s; sonuç bekleniyor (en çok %d sn)..." % (
+                    " (deneme %d/%d)" % (i, retry) if retry > 1 else "", FIX_WAIT))
+                outcome = wait_ahenk_outcome(db_path)
+                errs = registration_request_errors(t_start)
+                detail = OUTCOME_TEXT[outcome]
+                if errs["count"]:
+                    detail += "; Lider kayıt isteği: %s ×%d" % (", ".join(errs["kinds"]),
+                                                                errs["count"])
+                title = "Ahenk servisi başlatıldı" + (" (deneme %d/%d)" % (i, retry)
+                                                       if retry > 1 else "")
+                if why:
+                    title += " — " + why
+                ok = outcome in ("connected", "registered")
+                act("yapıldı" if ok else "başarısız", title, detail)
+                if ok:
+                    break
+                server_5xx = any(str(c).startswith("5") for c in errs["codes"])
+                if not server_5xx or i == retry:
+                    if server_5xx:
+                        act("düzeltilemez", "Lider kayıt sunucusu %d denemede de HTTP 5xx "
+                            "döndürdü" % retry, "Sunucu tarafı hatası; tahtada yapılacak "
+                            "başka bir şey yok. Operatöre bildirin (MAC, board_id: raporda).")
+                    break
+                time.sleep(5)
+
+    # 8) Tahtadan düzeltilemeyen ETA durumları
+    if eta_alt:
+        act("düzeltilemez", "ETA kaydı farklı bir MAC ile (%s)" % eta_alt.get("mac"),
+            "ETA sunucusundaki kaydın MAC'i yalnızca sunucuda güncellenebilir; yeniden kayıt "
+            "yinelenen kayıt üretir. Operatöre: board_id ve iki MAC (raporda).")
+    elif eta_res.get("registered") is False:
+        act("düzeltilemez", "Tahta ETA'da kayıtlı değil",
+            "Okul ve derslik seçimi gerekir: etapadmin ile oturum açıp ETA Kayıt'ı açın. "
+            "Kayıt sonrası Ahenk otomatik kurulup başlar.")
+
+    # 9) Tahtadan düzeltilemeyen ağ/sunucu sorunları (ilk teşhisteki bulgulardan)
+    unfixable = [
+        ("Varsayılan ağ geçidi yok", "Ağ yapılandırması: DHCP/ağ yöneticisi ağ geçidi "
+         "vermiyor; okul ağını kontrol edin."),
+        ("nameserver yok", "DNS sunucusu tanımlı değil: DHCP/ağ yapılandırmasını kontrol edin."),
+        ("DNS ile çözülemiyor", "DNS adı çözemiyor: okul DNS'ini ya da filtreyi kontrol edin."),
+        ("TCP portuna ulaşılamıyor", "Broker portu kapalı: okul güvenlik duvarı/filtre "
+         "6650-6651'i engelliyor olabilir."),
+        ("TCP bağlantı kurulamıyor", "Broker portu kapalı: okul güvenlik duvarı/filtre "
+         "6650-6651'i engelliyor olabilir."),
+        ("TLS el sıkışması başarısız", "TLS kurulamıyor: araya giren proxy/SSL denetimi "
+         "olabilir."),
+        ("ETA kayıt sunucusuna ulaşılamadı", "ETA API'ye erişilemiyor: ağ/filtre ya da sunucu "
+         "tarafı."),
+        ("Aktif bağlantı testi başarısız", "Pulsar sunucusu uygulama katmanında yanıt "
+         "vermiyor/yavaş: sunucu tarafı (adım süreleri raporda)."),
+        ("not_authorized", "Lider kaydı reddediyor: Lider tarafındaki kurallar; operatöre "
+         "bildirin."),
+    ]
+    done_titles = set()
+    for sev, title, _ in R.findings:
+        if sev != FAIL and "not_authorized" not in title:
+            continue
+        for key, why in unfixable:
+            if key in title and key not in done_titles:
+                done_titles.add(key)
+                act("düzeltilemez", title, why)
+
+    # 10) Yeniden teşhis
+    sys.stderr.write(bold("--fix: yeniden teşhis ediliyor...\n\n"))
+    R2, D2 = diagnose(args)
+    R2.fix = {"before": before, "actions": actions, "backup": backup_dir}
+    D2["fix"] = {"before": {"fail": before[0], "warn": before[1]},
+                 "actions": [{"status": s_, "title": t, "detail": d}
+                             for s_, t, d in actions],
+                 "backup": backup_dir}
+    fixed_any = any(s_ == "yapıldı" for s_, _, _ in actions)
+    return R2, D2, fixed_any
+
+
+def diagnose(args):
+    """Tam teşhis: bütün bölümleri çalıştırır, (Report, ham veri) döndürür."""
     R = Report()
     D = R.data
 
@@ -1847,6 +2260,13 @@ def main():
     else:
         R.line("ETA Kayıt sürümü", "%s (en son sürüm belirlenemedi)" % er_installed, INFO)
 
+    rc, audit, _ = run("dpkg --audit", timeout=30)
+    if rc == 0 and audit.strip():
+        D["dpkg_audit"] = True
+        R.line("dpkg durumu", "yarım kalmış paket işlemi var", WARN)
+        R.finding(WARN, "Yarım kalmış paket işlemi (dpkg)",
+                  "Bir kurulum/güncelleme yarıda kalmış; yeni paket işlemleri başarısız "
+                  "olabilir.\nÇÖZÜM: sudo dpkg --configure -a\n%s" % audit.strip()[:300])
     reg_err = registration_request_errors(srv_start)
     D["registration_errors"] = reg_err
     rc, active, _ = run("systemctl is-active ahenk.service")
@@ -1993,6 +2413,7 @@ def main():
             # ImportError/ModuleNotFound gibi başlangıç çökmeleri ölümcüldür
             if any(re.search(r"ImportError|ModuleNotFound|No module named|Traceback", s, re.I)
                    for s in sess_err["samples"]):
+                D["import_error"] = True
                 R.finding(FAIL, "Mevcut oturumda başlangıç/bağımlılık hatası",
                           "Loglarda ImportError/Traceback türü hata var; Ahenk düzgün "
                           "başlayamıyor olabilir.")
@@ -2064,6 +2485,7 @@ def main():
         R.line("conf.uid", "boş — kayıt tamamlanınca yazılır (beklenen)", INFO)
     elif root and conf_uid is not None and db_reg:
         if conf_uid != db_reg["jid"]:
+            D["conf_db_mismatch"] = True
             R.line("conf.uid vs db.jid", "UYUŞMUYOR", FAIL)
             R.finding(FAIL, "ahenk.conf UID ile DB JID farklı",
                       "conf=%s\ndb =%s\nBağlantı conf'taki UID ile yapılır; DB kaydı "
@@ -2126,6 +2548,7 @@ def main():
                       "Arayüz sıralaması/sürücü durumu beklenenden farklı olabilir.")
     else:
         R.line("etainfo.network", "HATA: %s" % eta["error"], FAIL)
+        D["etainfo_failed"] = True
         R.finding(FAIL, "etainfo.network kimlik MAC'i veremiyor",
                   "Ahenk'in kayıt sırasında kullandığı kod bu makinede başarısız: %s\n"
                   "Bu, kaydın hiç tamamlanamamasına yol açar." % eta["error"])
@@ -2208,6 +2631,29 @@ def main():
                 (last_success is not None and (cb_dt is None or last_success >= cb_dt) and
                  (srv_start is None or last_success >= srv_start))
 
+    D["conn_live"] = bool(conn_live)
+    D["consumer_busy_current"] = False
+
+    # Ahenk bekleme aşamasında mı? (servis çalışıyor, bağlantı yok, son denemeden
+    # sonra "Retrying in N minutes" ile uyuyor)
+    pw = logs["pulsar_wait"]
+    if (active == "active" and not conn_live and pw["last_dt"]
+            and (srv_start is None or pw["last_dt"] >= srv_start)
+            and (last_success is None or pw["last_dt"] > last_success)):
+        mins = re.search(r"Retrying in (\d+) minutes", pw.get("last_msg") or "")
+        att = re.search(r"retry (\d+)/(\d+)", logs["pulsar_attempt"].get("last_msg") or "")
+        nxt = pw["last_dt"] + datetime.timedelta(minutes=int(mins.group(1))) if mins else None
+        D["backoff"] = {"attempt": att.group(1) if att else "?",
+                        "max": att.group(2) if att else "?",
+                        "minutes": int(mins.group(1)) if mins else None,
+                        "next": nxt.strftime("%Y-%m-%d %H:%M:%S") if nxt else None}
+        R.line("Ahenk bekleme aşamasında", "deneme %s/%s başarısız; %s dk bekliyor, sonraki "
+               "deneme ≈ %s" % (D["backoff"]["attempt"], D["backoff"]["max"],
+                                 D["backoff"]["minutes"] or "?",
+                                 nxt.strftime("%H:%M") if nxt else "?"), WARN)
+        R.note("Bekleme kesintisizdir; ağ düzelse bile Ahenk bu süre dolmadan denemez. "
+               "Beklemeden denemek için: sudo systemctl restart ahenk.service")
+
     # ConsumerBusy değerlendirmesi — bayat mı, güncel mi?
     if logs["available"] and cb["count"] > 0:
         # Geçmiş (bayat) ConsumerBusy gösterilmez: servis yeniden başlamadan
@@ -2216,6 +2662,7 @@ def main():
         cb_stale = bool((srv_start and cb_dt and cb_dt < srv_start) or
                         (boot_dt and cb_dt and cb_dt < boot_dt) or
                         (last_success and cb_dt and last_success > cb_dt))
+        D["consumer_busy_current"] = not cb_stale
         if not cb_stale:
             # Güncel/aktif ConsumerBusy
             R.line("ConsumerBusy (log)", "%d kez, GÜNCEL (son: %s)" %
@@ -2363,9 +2810,11 @@ def main():
                ("var" if carrier_ok else "YOK", link["operstate"],
                 link["ip"] or "YOK", (link["speed"] or "?") + "Mb/s"), sev)
         if not carrier_ok:
+            D["no_carrier"] = ident_iface
             R.finding(FAIL, "Kablolu ağ bağlantısı (carrier) yok",
                       "%s arayüzünde kablo/link yok. Hiçbir sunucuya ulaşılamaz." % ident_iface)
         elif not link["has_ip"]:
+            D["iface_no_ip"] = ident_iface
             R.finding(FAIL, "Kimlik arayüzünde IPv4 adresi yok",
                       "%s 'up' ama IP almamış (DHCP sorunu?). Bağlantı kurulamaz." % ident_iface)
 
@@ -2484,6 +2933,7 @@ def main():
                             R.line("TLS trust cert", "%s (bitiş: %s)" % (ca, exp or "?"),
                                    OK)
                         else:
+                            D["pulsar_ca_missing"] = ca
                             R.line("TLS trust cert", "DOSYA YOK: %s" % ca, FAIL)
                             R.finding(FAIL, "Pulsar trust sertifika dosyası yok",
                                       "tls_trust_certs_file_path=%s bulunamadı." % ca)
@@ -2706,6 +3156,7 @@ def main():
         R.line("Çalışma süresi", "%s%d sa %d dk (açılış: %s)" % (
             "%d gün " % d_ if d_ else "", h_, m_, boot_dt.strftime("%Y-%m-%d %H:%M")), INFO)
     rc, sync, _ = run("timedatectl show -p NTPSynchronized --value")
+    D["ntp_sync"] = sync if rc == 0 else None
     R.line("Saat senkron (NTP)", sync if rc == 0 else "?",
            OK if sync == "yes" else WARN)
     if rc == 0 and sync != "yes":
@@ -2813,6 +3264,45 @@ def main():
     D["timeline"] = [(dt.strftime("%Y-%m-%d %H:%M:%S"), t)
                      for dt, t in sorted(R.timeline, key=lambda e: e[0])]
 
+    return R, D
+
+
+def main():
+    _set_color_mode(sys.argv[1:])
+    ap = _Parser(prog=PROG, add_help=False)
+    ap.add_argument("-h", "--help", "--yardim", action="help")
+    ap.add_argument("--renk", "--color", default="otomatik",
+                    choices=("otomatik", "her-zaman", "hicbir-zaman",
+                             "auto", "always", "never"))
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-net", action="store_true")
+    ap.add_argument("--out", metavar="DOSYA")
+    ap.add_argument("--db", default=None)
+    ap.add_argument("--mac", metavar="MAC", default=None)
+    ap.add_argument("--no-send", action="store_true")
+    ap.add_argument("--fix", action="store_true")
+    args = ap.parse_args()
+
+    # --- ZORUNLU ROOT ---
+    # Araç; ahenk.conf/messaging.conf (0600), parolalar, aktif Pulsar probe ve
+    # süreç soketleri için root yetkisi ister. Root değilse çalıştırmayı reddet.
+    if not is_root():
+        sys.stderr.write(
+            red("HATA: ") + "Bu araç root (sudo) yetkisiyle çalıştırılmalıdır.\n"
+            "  ahenk.conf/messaging.conf (0600), parolalar, aktif bağlantı testi ve\n"
+            "  süreç soketleri yalnızca root tarafından okunabilir.\n\n"
+            "  Kurulumsuz (depodan) çalıştırma:\n"
+            "    curl -fsSL https://raw.githubusercontent.com/enseitankado/"
+            "ahenk-debug/main/run.sh | sudo bash\n"
+            "  Yerel dosyadan:\n"
+            "    sudo python3 ahenk_debug.py\n")
+        return 3
+
+    fixed_any = False
+    R, D = diagnose(args)
+    if args.fix:
+        R, D, fixed_any = run_fix(args, R, D)
+
     # ---------------- Çıktı ----------------
     if args.json:
         D["findings"] = [{"severity": s, "title": t, "detail": d}
@@ -2846,7 +3336,8 @@ def main():
         summary, n_fail, n_warn = build_send_summary(D, R.findings)
         if url:
             summary += "\n\nTam rapor: %s" % url
-        title = "ahenk: %s" % (D.get("hostname") or platform.node())
+        title = "ahenk%s: %s" % (" --fix" if args.fix else "",
+                                 D.get("hostname") or platform.node())
         prio = "urgent" if n_fail else ("high" if n_warn else "default")
         tags = ["rotating_light"] if n_fail else (["warning"] if n_warn else ["white_check_mark"])
         nok, nerr = notify_ntfy(topic, title, summary, click=url, priority=prio, tags=tags)
@@ -2858,9 +3349,9 @@ def main():
             reason = nerr or perr or "bilinmeyen hata"
             print("\nRapor operatöre gönderilemedi: %s" % reason)
 
-    # çıkış kodu: FAIL varsa 2, WARN varsa 1, yoksa 0
+    # çıkış kodu: FAIL varsa 2 (--fix işlem yaptıysa 4), WARN varsa 1, yoksa 0
     if any(f[0] == FAIL for f in R.findings):
-        return 2
+        return 4 if (args.fix and fixed_any) else 2
     if any(f[0] == WARN for f in R.findings):
         return 1
     return 0
