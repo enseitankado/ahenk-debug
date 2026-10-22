@@ -2195,6 +2195,14 @@ def main():
         R.line("Aktif bağlantı testi", "--no-net ile atlandı", INFO)
     elif _mtype != "pulsar":
         R.line("Aktif bağlantı testi", "yalnız Pulsar için geçerli (messenger=%s)" % _mtype, INFO)
+    elif conn_live:
+        D["active_probe"] = {"attempted": False, "skipped": True,
+                             "error": "Pulsar bağlantısı canlı"}
+        R.line("Aktif Pulsar testi", "yapılmadı — Ahenk'in Pulsar mesajlaşma bağlantısı "
+               "şu an canlı (%s); test yalnızca bağlantı yokken teşhis için yapılır" % (
+                   "%d aktif TCP" % live["count"] if live["count"] else
+                   "son başarılı olay %s" % last_success.strftime("%Y-%m-%d %H:%M:%S")),
+               INFO)
     else:
         R.line("Aktif Pulsar testi", "deneniyor (adım başına en çok %d sn)..." %
                PROBE_TIMEOUT, INFO)
@@ -2236,11 +2244,6 @@ def main():
                              "tahtanın uid/parolası Pulsar sunucusunda geçersiz (Lider'de "
                              "silinmiş/değişmiş kayıt ya da klon imajdan gelen eski "
                              "kimlik). Sunucu reddin nedenini bildirmez. ")
-                elif conn_live and st not in ("tcp", "tls"):
-                    sev, title = WARN, "Aktif test başarısız ama Ahenk şu an bağlı"
-                    extra = ("Ahenk'in kendi bağlantısı canlı (yukarıda); test sunucunun o "
-                             "anki yavaşlığını/hatasını gösteriyor. Ahenk aynı işlemde 300 "
-                             "sn bekler, test %d sn. " % probe.get("timeout", PROBE_TIMEOUT))
                 else:
                     sev, title = FAIL, "Aktif bağlantı testi başarısız"
                     extra = ""
@@ -2606,6 +2609,14 @@ def main():
     R.line("Çekirdek", platform.release(), INFO)
     R.line("Mimari", "%s / %s" % (platform.machine(), platform.architecture()[0]), INFO)
     R.line("Hostname", platform.node(), INFO)
+    if boot_dt:
+        up = int((datetime.datetime.now() - boot_dt).total_seconds())
+        D["uptime_seconds"] = up
+        d_, rem = divmod(up, 86400)
+        h_, rem = divmod(rem, 3600)
+        m_ = rem // 60
+        R.line("Çalışma süresi", "%s%d sa %d dk (açılış: %s)" % (
+            "%d gün " % d_ if d_ else "", h_, m_, boot_dt.strftime("%Y-%m-%d %H:%M")), INFO)
     rc, sync, _ = run("timedatectl show -p NTPSynchronized --value")
     R.line("Saat senkron (NTP)", sync if rc == 0 else "?",
            OK if sync == "yes" else WARN)
@@ -2714,10 +2725,8 @@ def main():
         disp_topic = topic if topic.startswith("http") else "%s/%s" % (NTFY_BASE, topic)
         D["send"] = {"paste_url": url, "ntfy_topic": disp_topic,
                      "paste_ok": ok, "ntfy_ok": nok}
-        # Tek satır sonuç
-        if nok:
-            print("\nRapor operatöre gönderildi.")
-        else:
+        # Başarıda sessiz; yalnızca gönderilemezse bildir (rapor elle iletilmeli)
+        if not nok:
             reason = nerr or perr or "bilinmeyen hata"
             print("\nRapor operatöre gönderilemedi: %s" % reason)
 

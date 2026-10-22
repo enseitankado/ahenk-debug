@@ -239,7 +239,7 @@ bunu da belirtir. (`--mac` verilmişse ek sorgu yapılmaz.)
 
 ### 6) Sistem / Dağıtım / Çekirdek
 Dağıtım ve alt sürüm (ör. *Pardus ETAP GNU/Linux 23*), `lsb_release`, çekirdek
-sürümü, mimari, hostname, **NTP saat senkronu** (saat kayması TLS doğrulamasını
+sürümü, mimari, hostname, **çalışma süresi** (son açılıştan bu yana; açılış zamanıyla), **NTP saat senkronu** (saat kayması TLS doğrulamasını
 ve zaman damgalarını bozar).
 
 ### 7) Donanım, Faz ve Dokunmatik
@@ -290,8 +290,9 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
    Her adım en çok **60 sn** bekler (Ahenk 120 sn bağlanma / 300 sn işlem bekler).
    Sunucu oturum isteğini protokol düzeyinde `ERROR` ile reddederse (kütüphane
    bunu yalnızca `ConnectError` diye bildirir) **kimlik reddi** olarak raporlanır.
-   Ahenk'in kendi bağlantısı canlıyken test başarısız olursa bulgu **WARN**'dur
-   (sunucunun o anki yavaşlığı). Kayıt tamamlanmamışsa tahtanın Pulsar kimliği
+   Test yalnızca **Ahenk'in Pulsar bağlantısı canlı değilken** yapılır; bağlantı
+   canlıysa (aktif TCP ya da yeni başarılı olay) "yapılmadı" diye belirtilir, çünkü
+   canlı bağlantı aynı şeyi zaten kanıtlar. Kayıt tamamlanmamışsa tahtanın Pulsar kimliği
    olmadığından test atlanır. Komut aboneliğine (`ahenk-<uid>`) **dokunmaz**,
    çalışan Ahenk'i etkilemez. (`--no-net` ile atlanır.)
 
@@ -326,6 +327,9 @@ gerek kalmaz. Hiçbir sunucu kurulmaz; iki ücretsiz servis kullanılır:
 - **[paste.rs](https://paste.rs)** — tam rapor metni yüklenir, kısa bir URL üretilir.
 - **[ntfy.sh](https://ntfy.sh)** — özet + rapor linki, operatörün bir **konusuna**
   (topic) anlık bildirim olarak itilir.
+
+Gönderim başarılıysa ekrana ayrıca bir ileti yazılmaz; gönderilemezse nedeni
+("Rapor operatöre gönderilemedi: …") yazılır — o durumda rapor elle iletilmelidir.
 
 Yani normal çalıştırmada (`sudo ./ahenk_debug.py` veya kurulumsuz `curl … | sudo bash`)
 gönderim kendiliğinden yapılır. Otomatik göndermeyi **kapatmak** için `--no-send`
