@@ -11,6 +11,17 @@ ağ/bağlantı ve yerel yazılım sınıflarına ayırır.
 curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash
 ```
 
+Bulunan sorunları **otomatik düzeltmek** için aynı komutu `--fix` ile çalıştırın:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/enseitankado/ahenk-debug/main/run.sh | sudo bash -s -- --fix
+```
+
+`--fix` önce teşhis eder, düzeltilebilen sorunları onay sormadan giderir (Ahenk'i
+kurar/günceller, servisi etkinleştirip başlatır, Lider kaydını gerekirse yeniden
+dener, reddedilen kimliği yedekleyip sıfırlar…), ardından yeniden teşhis edip
+önce/sonra raporu verir. Ayrıntılar: [Otomatik düzeltme](#otomatik-düzeltme---fix).
+
 ---
 
 ## İçindekiler

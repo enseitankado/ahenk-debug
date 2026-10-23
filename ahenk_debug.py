@@ -124,6 +124,28 @@ _BADGE = {
 }
 
 
+# Çalışma aşaması göstergesi (stderr): terminalde tek satır, yerinde güncellenir ve
+# rapor basılmadan önce silinir; terminal değilse her aşama ayrı satır.
+_PROGRESS_TTY = sys.stderr.isatty()
+
+
+def progress(msg):
+    if _PROGRESS_TTY:
+        width = max(20, shutil.get_terminal_size((80, 24)).columns - 4)
+        if len(msg) > width:
+            msg = msg[:width - 1] + "…"     # taşarsa yerinde güncelleme bozulur
+        sys.stderr.write("\r\033[K" + grey("⏳ " + msg))
+    else:
+        sys.stderr.write("· %s\n" % msg)
+    sys.stderr.flush()
+
+
+def progress_clear():
+    if _PROGRESS_TTY:
+        sys.stderr.write("\r\033[K")
+        sys.stderr.flush()
+
+
 class Report:
     """Bulguları toplar; hem ekrana basar hem JSON üretir hem özet/teşhis çıkarır."""
 
@@ -137,6 +159,7 @@ class Report:
 
     # --- bölüm/satır ---
     def section(self, title):
+        progress("Teşhis %s..." % title)
         self._cur = (title, [])
         self.sections.append(self._cur)
         return self
@@ -1778,6 +1801,7 @@ def fix_run(cmd, timeout=600):
 
 
 def fix_progress(msg):
+    progress_clear()
     sys.stderr.write(grey("  → ") + msg + "\n")
     sys.stderr.flush()
 
@@ -1887,6 +1911,7 @@ def run_fix(args, R, D):
 
     before = (sum(1 for f in R.findings if f[0] == FAIL),
               sum(1 for f in R.findings if f[0] == WARN))
+    progress_clear()
     sys.stderr.write(bold("\n--fix: düzeltmeler uygulanıyor (bu birkaç dakika "
                           "sürebilir)...\n"))
     db_path = (D.get("db") or {}).get("path") or DEFAULT_DB
@@ -2273,6 +2298,7 @@ def diagnose(args):
                   "%s\n%s" % (etareg_reason(), etareg_fix))
 
     # Sürüm: depodaki adaydan eski mi?
+    progress("Teşhis 1) depodaki Ahenk ve ETA Kayıt sürümleri denetleniyor...")
     repo = ahenk_repo_status(pkg if ahenk_installed else None, online=not args.no_net)
     D["ahenk_repo"] = repo
     if repo["published"]:
@@ -2830,6 +2856,7 @@ def diagnose(args):
     else:
         R.line("Aktif Pulsar testi", "deneniyor (adım başına en çok %d sn)..." %
                PROBE_TIMEOUT, INFO)
+        progress("Teşhis 3) aktif Pulsar testi (adım başına en çok %d sn)..." % PROBE_TIMEOUT)
         probe = active_pulsar_probe(cp, registered=D.get("registered"))
         D["active_probe"] = probe
         if probe.get("skipped"):
@@ -3165,6 +3192,7 @@ def diagnose(args):
         R.line("ETA sorgusu", "kimlik MAC'i yok — sorgu yapılamadı", FAIL)
     else:
         R.line("Sorgu MAC", query_mac, INFO)
+        progress("Teşhis 5) ETA sunucusu sorgulanıyor...")
         eta = query_eta_board(query_mac, eta_backend, eta_header)
         D["eta_api"]["result"] = {k: v for k, v in eta.items() if k != "raw"}
         alt, alt_tried = None, []
@@ -3455,6 +3483,7 @@ def main():
         R, D, fixed_any = run_fix(args, R, D)
 
     # ---------------- Çıktı ----------------
+    progress_clear()
     if args.json:
         D["findings"] = [{"severity": s, "title": t, "detail": d}
                          for s, t, d in R.findings]
@@ -3480,6 +3509,7 @@ def main():
     elif not args.no_send:
         # paste düz metin gösterir: renk kodlarını ve sekmeleri temizleyerek gönder
         plain = clean_for_paste(R.render())
+        progress("Rapor operatöre gönderiliyor...")
         # 1) Tam raporu paste.rs'e yükle
         ok, url, perr = upload_paste(plain)
         # 2) Özet + linki ntfy.sh konusuna it
@@ -3495,6 +3525,7 @@ def main():
         disp_topic = topic if topic.startswith("http") else "%s/%s" % (NTFY_BASE, topic)
         D["send"] = {"paste_url": url, "ntfy_topic": disp_topic,
                      "paste_ok": ok, "ntfy_ok": nok}
+        progress_clear()
         # Başarıda sessiz; yalnızca gönderilemezse bildir (rapor elle iletilmeli)
         if not nok:
             reason = nerr or perr or "bilinmeyen hata"
