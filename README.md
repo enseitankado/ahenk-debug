@@ -367,6 +367,14 @@ JSON çıktısında `timeline` alanındadır.
 
 ## Canlı bağlantı doğrulaması (bayat log ≠ güncel hata)
 
+**Analiz penceresi:** Ahenk günlükleri yalnızca **Ahenk'in kendi (son) oturumu** için
+değerlendirilir: servisin son başlangıcından (`ActiveEnterTimestamp`) bu yana. Servis
+bu açılışta hiç başlamadıysa pencere tahtanın açılışıdır. Öncesindeki ERROR/WARN
+kayıtları (önceki oturumlar ve açılışlar) **ekrana basılmaz ve değerlendirilmez**;
+sayımlar (ör. "Pulsar bağlantı hataları: N kez") yalnızca bu pencereyi kapsar. ETA Kayıt
+günlüğü de yalnızca bu açılıştan beri okunur. Pencere raporun 1. bölümünde "Günlük
+analizi" satırında yazar.
+
 Loglardaki `ConsumerBusy` kayıtları **eski bir oturuma ait olup artık geçerli
 olmayabilir.** Bu yüzden araç statik log sayımıyla yetinmez; hatanın **güncel mi
 yoksa bayat mı** olduğunu birden çok kanıtla belirler:

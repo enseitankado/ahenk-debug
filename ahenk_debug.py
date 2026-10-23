@@ -426,12 +426,16 @@ def boot_time_dt():
     return datetime.datetime.fromtimestamp(int(m.group(1))) if m else None
 
 
-def analyze_logs(max_lines=6000):
+def analyze_logs(max_lines=6000, since=None):
     """Son logları tara; her olay için sayı + son zaman damgası (str ve datetime)."""
     patterns = {
         "consumer_busy":    re.compile(r"ConsumerBusy", re.I),
         "not_authorized":   re.compile(r"not_authorized|registration_error", re.I),
-        "pulsar_conn_fail": re.compile(r"(Pulsar connection failed|Failed to connect to Pulsar|Producer connection failed)", re.I),
+        # her başarısız deneme bir kez sayılır: ardından gelen "Retrying in N minutes" ve
+        # "after maximum retries" satırları aynı denemenin parçasıdır
+        "pulsar_conn_fail": re.compile(r"(Pulsar connection failed(?!\. Retrying| after maximum)"
+                                       r"|Failed to connect to Pulsar|Producer connection failed"
+                                       r"|Pulsar connection attempt \d+ failed)", re.I),
         "conn_refused":     re.compile(r"refused|ConnectError|Connection reset", re.I),
         "timeout":          re.compile(r"timed out|TimeoutError|operation_timeout", re.I),
         "reg_success":      re.compile(r"Registration successful", re.I),
@@ -463,8 +467,13 @@ def analyze_logs(max_lines=6000):
         return res
     res["available"] = True
     lines = text.splitlines()[-max_lines:]
+    in_window = since is None
     for ln in lines:
         dt = parse_log_ts(ln)
+        if dt:
+            in_window = since is None or dt >= since
+        if not in_window:        # bu oturumdan önceki satırlar: sayılmaz, değerlendirilmez
+            continue
         if dt:
             res["last_line_dt"] = dt
         for key, rx in patterns.items():
@@ -524,7 +533,7 @@ ETA_REG_OUTCOMES = [
 ]
 
 
-def analyze_eta_register_log():
+def analyze_eta_register_log(since=None):
     """ETA kayıt günlüklerini oku; son arka plan denetimi, kurulum ve servis sonucu."""
     res = {"available": False, "files": [], "runs": 0, "last_run": None,
            "outcome": None, "outcome_text": None, "outcome_dt": None,
@@ -545,6 +554,9 @@ def analyze_eta_register_log():
         return res
     res["available"] = True
     entries.sort(key=lambda e: e[0])  # birden çok dosya: zamana göre birleştir
+    if since is not None:             # yalnızca bu açılıştan beri
+        entries = [e for e in entries
+                   if (parse_log_ts(e[0]) or since) >= since]
     for ts, msg in entries:
         dt = parse_log_ts(ts)
         if "--- Dispatcher Starting ---" in msg:
@@ -2209,14 +2221,20 @@ def diagnose(args):
 
     srv_start = service_start_dt()
     boot_dt = boot_time_dt()
+    # Analiz penceresi: Ahenk'in kendi (son) oturumu. Servis bu açılışta hiç başlamadıysa
+    # açılıştan beri. Öncesindeki günlük kayıtları ne gösterilir ne değerlendirilir.
+    log_since = srv_start or boot_dt
+    if boot_dt and srv_start and srv_start < boot_dt:
+        log_since = boot_dt        # önceki açılışın oturumu bu açılışa ait değil
 
     # ---------------- 1) Genel / servis / yerel sağlık ----------------
     R.section("1) Genel Durum, Servis ve Yerel Sağlık")
     rc, pkg, _ = run("dpkg-query -W -f='${Version}' ahenk")
     ahenk_installed = rc == 0 and bool(pkg)
     D["ahenk_version"] = pkg if ahenk_installed else None
-    logs = analyze_logs()
-    etareg = analyze_eta_register_log()
+    logs = analyze_logs(since=log_since)
+    etareg = analyze_eta_register_log(since=boot_dt)
+    D["log_window_start"] = log_since.strftime("%Y-%m-%d %H:%M:%S") if log_since else None
     D["eta_register_log"] = {k: (v.strftime("%Y-%m-%d %H:%M:%S")
                                  if isinstance(v, datetime.datetime) else v)
                              for k, v in etareg.items()}
@@ -2231,11 +2249,19 @@ def diagnose(args):
             return ("ETA Kayıt günlüğü yok: arka plan denetimi bu tahtada hiç "
                     "çalışmamış (etapadmin oturumu hiç açılmamış olabilir).")
         if etareg["last_run"] is None:
-            return "ETA Kayıt günlüğünde arka plan denetimi kaydı yok."
+            return ("ETA Kayıt arka plan denetimi bu açılışta çalışmamış (etapadmin "
+                    "oturumu açılmamış olabilir).")
         return ("ETA Kayıt son arka plan denetimi (%s): %s." % (
             etareg["last_run"].strftime("%Y-%m-%d %H:%M"),
             etareg["outcome_text"] or "sonuç kaydı yok"))
 
+    if log_since:
+        R.line("Günlük analizi", "yalnızca Ahenk'in bu oturumu (başlangıç: %s); öncesi "
+               "gösterilmez ve değerlendirilmez" % log_since.strftime("%Y-%m-%d %H:%M:%S")
+               if srv_start and log_since == srv_start else
+               "yalnızca bu açılış (açılış: %s; Ahenk bu açılışta başlamamış); öncesi "
+               "gösterilmez ve değerlendirilmez" % log_since.strftime("%Y-%m-%d %H:%M:%S"),
+               INFO)
     if ahenk_installed:
         R.line("Ahenk paketi", pkg, OK)
     else:
@@ -2331,7 +2357,7 @@ def diagnose(args):
         R.finding(WARN, "Yarım kalmış paket işlemi (dpkg)",
                   "Bir kurulum/güncelleme yarıda kalmış; yeni paket işlemleri başarısız "
                   "olabilir.\nÇÖZÜM: sudo dpkg --configure -a\n%s" % audit.strip()[:300])
-    reg_err = registration_request_errors(srv_start)
+    reg_err = registration_request_errors(log_since)
     D["registration_errors"] = reg_err
     rc, active, _ = run("systemctl is-active ahenk.service")
     rc2, enabled, _ = run("systemctl is-enabled ahenk.service")
@@ -2393,6 +2419,9 @@ def diagnose(args):
 
     # ETA Kayıt günlüğü (bilgi; sorun varsa yukarıdaki bulgulara gerekçe olur)
     if etareg["available"]:
+        if not etareg["last_run"]:
+            R.line("ETA Kayıt son denetim", "bu açılışta çalışmamış (etapadmin oturumu "
+                   "açılmamış olabilir)", INFO)
         if etareg["last_run"]:
             R.line("ETA Kayıt son denetim", "%s — %s" % (
                 etareg["last_run"].strftime("%Y-%m-%d %H:%M"),
@@ -2457,7 +2486,7 @@ def diagnose(args):
 
     # Mevcut servis oturumundaki hatalar (başlangıç/ölümcül)
     cert_path_empty = not (cfg(cp, "PULSAR", "tls_trust_certs_file_path") or "").strip()
-    sess_err = scan_session_errors(srv_start, cert_path_empty=cert_path_empty)
+    sess_err = scan_session_errors(log_since, cert_path_empty=cert_path_empty)
     D["session_errors"] = sess_err
     if sess_err["available"]:
         if sess_err["expected"]:
@@ -3228,7 +3257,7 @@ def diagnose(args):
                               data.get("board_id"), query_mac))
 
     # Lider kayıt sunucusu hatası: operatöre iletilecek bilgilerle
-    reg_err = D.get("registration_errors") or registration_request_errors(srv_start)
+    reg_err = D.get("registration_errors") or registration_request_errors(log_since)
     if reg_err["count"] and str(D.get("registered")) != "1":
         sch = D.get("school") or {}
         server_side = any(c.startswith("5") for c in reg_err["codes"])
