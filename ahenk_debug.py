@@ -434,7 +434,8 @@ def analyze_logs(max_lines=6000):
         "pulsar_conn_fail": re.compile(r"(Pulsar connection failed|Failed to connect to Pulsar|Producer connection failed)", re.I),
         "conn_refused":     re.compile(r"refused|ConnectError|Connection reset", re.I),
         "timeout":          re.compile(r"timed out|TimeoutError|operation_timeout", re.I),
-        "reg_success":      re.compile(r"Registration successful|already registered", re.I),
+        "reg_success":      re.compile(r"Registration successful", re.I),
+        "already_registered": re.compile(r"already registered", re.I),
         "publish_ok":       re.compile(r"Message published successfully", re.I),
         "pulsar_connected": re.compile(r"Connected to Pulsar|Pulsar connection successful", re.I),
         "pulsar_attempt":   re.compile(r"Pulsar connection retry \d+/\d+", re.I),
@@ -841,6 +842,9 @@ def scan_session_errors(srv_start, max_samples=4, cert_path_empty=False):
         if cert_path_empty and "Error during certificate download" in ln:
             out["expected"] += 1
             continue
+        if PULSAR_FAIL_RE.search(ln):     # Pulsar bağlantı hataları ayrı raporlanıyor
+            out["pulsar"] = out.get("pulsar", 0) + 1
+            continue
         if ("registration.py" in ln or "REGISTRATION" in ln) and REG_ERR_RE.search(ln):
             out["registration"] = out.get("registration", 0) + 1
             continue
@@ -852,6 +856,8 @@ def scan_session_errors(srv_start, max_samples=4, cert_path_empty=False):
     return out
 
 
+PULSAR_FAIL_RE = re.compile(
+    r"Pulsar connection failed|Failed to connect to Pulsar|Producer connection failed", re.I)
 REG_ERR_RE = re.compile(
     r"HTTP error occurred: (\d{3})|HTTP connection error occurred|The request timed out")
 
@@ -2533,6 +2539,16 @@ def diagnose(args):
                           else "Neden günlükte görünmüyor; kayıt ucuna erişimi (4. bölüm) "
                                "inceleyin."))
         R.line("Kayıt zamanı", db_reg["timestamp"], INFO)
+        mv = re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-([0-9a-f])", (db_reg["jid"] or "").lower())
+        uuid_ver = mv.group(1) if mv else None
+        legacy = registered_flag and (bool(dn) or uuid_ver == "3")
+        D["legacy_identity"] = {"legacy": legacy, "uuid_version": uuid_ver,
+                                "ldap_dn": bool(dn), "timestamp": db_reg["timestamp"]}
+        if legacy:
+            R.line("Kimlik dönemi", "ESKİ MİMARİ (LDAP dönemi): %s" % ", ".join(
+                x for x in ("LDAP DN dolu" if dn else "",
+                            "UUID sürüm 3 (MAC'ten türetilmiş)" if uuid_ver == "3" else "",
+                            "kayıt %s" % db_reg["timestamp"]) if x), INFO)
     else:
         R.line("DB", "okunamadı: %s" % (db["error"] or "?"),
                FAIL if root else WARN)
@@ -2657,10 +2673,13 @@ def diagnose(args):
     live = live_broker_connections(cp)
     D["live_connection"] = live
     # En son başarılı bağlantı/iletişim olayı (datetime)
+    # "already registered" yalnızca yerel kayıt kontrolüdür, bağlantı kanıtı değildir.
     success_dts = [logs[k]["last_dt"] for k in
-                   ("pulsar_connected", "publish_ok", "received", "reg_success")
+                   ("pulsar_connected", "publish_ok", "received")
                    if logs[k]["last_dt"]]
     last_success = max(success_dts) if success_dts else None
+    last_reg_ok = logs["reg_success"]["last_dt"]
+    pcf_dt = logs["pulsar_conn_fail"]["last_dt"]
     cb = logs["consumer_busy"]
     cb_dt = cb["last_dt"]
 
@@ -2687,7 +2706,8 @@ def diagnose(args):
     # Bağlantı CANLI mı? (çoklu kanıt)
     conn_live = (live["count"] > 0) or \
                 (last_success is not None and (cb_dt is None or last_success >= cb_dt) and
-                 (srv_start is None or last_success >= srv_start))
+                 (srv_start is None or last_success >= srv_start) and
+                 not (pcf_dt and pcf_dt > last_success))
 
     D["conn_live"] = bool(conn_live)
     D["consumer_busy_current"] = False
@@ -2742,7 +2762,8 @@ def diagnose(args):
         if na["count"] > 0:
             na_stale = (srv_start and na["last_dt"] and na["last_dt"] < srv_start) or \
                        (boot_dt and na["last_dt"] and na["last_dt"] < boot_dt) or \
-                       (last_success and na["last_dt"] and last_success > na["last_dt"])
+                       (last_success and na["last_dt"] and last_success > na["last_dt"]) or \
+                       (last_reg_ok and na["last_dt"] and last_reg_ok > na["last_dt"])
             if na_stale:
                 R.line("not_authorized (log)", "%d kez ama bayat (son: %s)" %
                        (na["count"], na["last"]), INFO)
@@ -2842,11 +2863,51 @@ def diagnose(args):
         else:
             ls = ("sunucu tarafı doğrulanamadı", "canlı bağlantı yok, aktif test kimliği "
                   "doğrulayamadı", INFO)
+        li = D.get("legacy_identity") or {}
+        if li.get("legacy") and ls[2] == FAIL:
+            ls = (ls[0], ls[1] + "; kimlik eski mimariden (LDAP dönemi)", FAIL)
         D["lider_server"] = {"short": ls[0], "evidence": ls[1]}
         R.line("Lider kaydı (sunucu tarafı)", "%s — %s" % (ls[0], ls[1]), ls[2])
         if ls[2] == INFO:
             R.note("Yerel DB'deki registered=1, Lider'in kaydı geçmişte kabul ettiğini "
                    "gösterir; bugün hâlâ geçerli olduğunu doğrulamaz.")
+
+    # Ahenk çalışıyor ama Pulsar oturumu kurulamıyor (bu oturumda bağlantı hatası var)
+    if active == "active" and not conn_live and pcf_dt and \
+            (srv_start is None or pcf_dt >= srv_start):
+        n_fail = logs["pulsar_conn_fail"]["count"]
+        bo = D.get("backoff") or {}
+        pr = D.get("active_probe") or {}
+        li = D.get("legacy_identity") or {}
+        cause = ""
+        if pr.get("auth_ok") is False:
+            cause = ("Neden: Pulsar sunucusu tahtanın kimliğini REDDEDİYOR (aktif test)%s. "
+                     "Çözüm: Ahenk kimliğini sıfırlayıp yeniden kayıt (--fix bunu yapar)."
+                     % (" — kimlik eski mimariden (LDAP dönemi)" if li.get("legacy") else ""))
+        elif pr.get("failed_stage"):
+            cause = "Neden: %s" % probe_layer_verdict(pr)
+        elif li.get("legacy"):
+            cause = ("Olası neden: kimlik eski mimariden (LDAP dönemi); sunucu bu kimliği "
+                     "tanımıyor olabilir. Aktif test sonucuna bakın.")
+        D["pulsar_session_failing"] = True
+        R.finding(FAIL, "Ahenk çalışıyor ama Pulsar oturumu kurulamıyor",
+                  "Servis çalışıyor, broker'a aktif bağlantı yok; günlükte son Pulsar hatası "
+                  "%s (toplam %d kayıt).%s\n%s" % (
+                      hms(pcf_dt), n_fail,
+                      (" Ahenk bekleme aşamasında: deneme %s/%s, sonraki deneme %s." % (
+                          bo.get("attempt"), bo.get("max"), hms(bo.get("next"))))
+                      if bo else "", cause or "Ağ/TLS sağlamsa sorun uygulama katmanında "
+                      "(Pulsar sunucusu)."))
+    li = D.get("legacy_identity") or {}
+    if li.get("legacy") and not conn_live and str(D.get("registered")) == "1" \
+            and not D.get("pulsar_session_failing"):
+        R.finding(WARN, "Ahenk kimliği eski mimariden (LDAP dönemi)",
+                  "Kimlik LDAP'lı dönemde oluşturulmuş (kayıt %s%s%s). Mevcut mimaride Pulsar "
+                  "sunucusu bu kimlikleri tanımayabilir; Ahenk yerel kaydı 'var' gördüğü için "
+                  "('already registered') yeniden kayıt olmaz. Aktif test oturumu "
+                  "reddederse --fix kimliği sıfırlayıp yeni kayıt yaptırır." % (
+                      li.get("timestamp"), ", LDAP DN dolu" if li.get("ldap_dn") else "",
+                      ", UUID sürüm 3" if li.get("uuid_version") == "3" else ""))
 
     # ---------------- 4) Bağlantı / Temel TCP / DNS ----------------
     R.section("4) Bağlantı, Temel TCP ve DNS")
@@ -3277,7 +3338,8 @@ def diagnose(args):
 
     # ---------------- Olumlu özet ----------------
     if not any(f[0] == FAIL for f in R.findings):
-        if active == "active" and logs.get("consumer_busy", {}).get("count", 0) == 0:
+        if active == "active" and D.get("conn_live") and \
+                logs.get("consumer_busy", {}).get("count", 0) == 0:
             R.finding(OK, "Kritik hata bulunamadı",
                       "Servis çalışıyor, kimlik tutarlı, ConsumerBusy yok. "
                       "Çevrimdışı görünüm geçici ağ kesintisi kaynaklı olabilir.")
@@ -3306,7 +3368,9 @@ def diagnose(args):
     if rerr.get("count"):
         ev(rerr["first_dt"], "Ahenk: Lider kayıt isteği başarısız — %s ×%d (son: %s)" % (
             ", ".join(rerr["kinds"]), rerr["count"], hms(rerr["last"])))
-    ev(logs["reg_success"]["last_dt"], "Ahenk: Lider kaydı başarılı")
+    ev(logs["reg_success"]["last_dt"], "Ahenk: Lider kaydı başarılı (yeni kayıt)")
+    ev(logs["already_registered"]["last_dt"], "Ahenk: yerel Lider kaydı mevcut — yeniden "
+       "kayıt yapılmadı")
     ev(logs["pulsar_connected"]["last_dt"], "Ahenk: Pulsar'a bağlandı")
     if logs["pulsar_conn_fail"]["count"]:
         ev(logs["pulsar_conn_fail"]["last_dt"], "Ahenk: Pulsar bağlantı hatası")

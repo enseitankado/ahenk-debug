@@ -44,6 +44,8 @@ sudo ./ahenk_debug.py --json                    # JSON çıktı (betikler için)
 sudo ./ahenk_debug.py --no-net                  # ağ/API/aktif testleri atla (hızlı)
 sudo ./ahenk_debug.py --out rapor.txt           # raporu dosyaya da yaz
 sudo ./ahenk_debug.py --mac AA:BB:CC:DD:EE:FF    # başka bir tahtayı MAC ile sorgula
+sudo ./ahenk_debug.py --fix                     # sorunları otomatik düzelt + yeniden teşhis
+sudo ./ahenk_debug.py --no-send                 # raporu operatöre gönderme (test için)
 ```
 
 > **Root zorunludur.** Araç, root olmadan çalıştırılırsa bir uyarı basıp **çıkar**
@@ -52,10 +54,11 @@ sudo ./ahenk_debug.py --mac AA:BB:CC:DD:EE:FF    # başka bir tahtayı MAC ile s
 > UID/parola, broker adresi, TLS sertifika yolu gibi kritik alanları içerir;
 > ayrıca aktif Pulsar testi ve süreç soketleri de root yetkisi ister.
 
-Araç, yapılandırma okuma açısından salt-okurdur; hiçbir Ahenk ayarını veya
-servisini değiştirmez. Tek istisna **aktif Pulsar testidir** (varsayılan olarak
+`--fix` verilmedikçe araç salt-okurdur; hiçbir Ahenk ayarını, servisini veya
+sunucu kaydını değiştirmez. Tek istisna **aktif Pulsar testidir** (varsayılan olarak
 çalışır): Ahenk'in açılışta zaten yaptığı gibi `test-topic-lider`'e bir test
-mesajı yollar, komut aboneliğine dokunmaz.
+mesajı yollar, komut aboneliğine dokunmaz. Sistemi değiştiren her şey
+[`--fix`](#otomatik-düzeltme---fix) altındadır.
 
 ---
 
@@ -267,6 +270,14 @@ ETA kaydının başarılı olması (ör. derslik adının değişmesi) Lider kay
 etmez: ETA Kayıt kaydettikten sonra Ahenk'i başlatır, Ahenk de Lider'e ayrıca kayıt
 olur. Lider kaydı başarısız olursa Ahenk kendini durdurur.
 
+**Eski mimari kimliği:** Kayıt LDAP'lı dönemde yapılmışsa (LDAP DN dolu ya da UUID
+sürüm 3 — eski Ahenk'in MAC'ten türettiği kimlik; bugünkü Ahenk sürüm 4 üretir) 2.
+bölümde "Kimlik dönemi: ESKİ MİMARİ" yazılır. Böyle bir tahta Pulsar'a bağlanamıyorsa
+neden büyük olasılıkla sunucunun bu kimliği artık tanımamasıdır: Ahenk yerel kaydı
+"var" gördüğü için yeniden kayıt olmaz. Aktif test oturumu reddederse rapor bunu
+"Ahenk çalışıyor ama Pulsar oturumu kurulamıyor — Neden: sunucu kimliği reddediyor
+(eski mimari)" diye bildirir; `--fix` reddi ikinci kez doğrulayıp kimliği sıfırlar.
+
 Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
 (LDAP dizin nesnesi) yalnızca bilgi olarak gösterilir, boş olması bulgu üretmez.
 
@@ -311,8 +322,13 @@ FARKLI BİR MAC ile kayıtlı" verilir: **yeniden kaydetmeyin** — ETA Kayıt'�
 ekranı yeni bir kayıt (yeni board_id) oluşturur, eski kayıt sahipsiz kalır; ETA
 Kayıt'ın Düzenle'si de yalnızca mevcut MAC kayıtlıyken görünür. Çözüm: eski MAC'li
 kartın yeniden kimlik kartı seçilmesini sağlamak ya da operatörden ilgili
-board_id kaydının MAC'ini güncellemesini istemek. Hiçbirinde kayıt yoksa bulgu
-bunu da belirtir. (`--mac` verilmişse ek sorgu yapılmaz.)
+board_id kaydının MAC'ini güncellemesini istemek. Eski MAC **bu tahtadaki bir
+karta** aitse `--fix` bu güncellemeyi kendisi yapar: ETA Kayıt'ın Düzenle → Kaydet
+isteğiyle (`POST /api/board/update`) kaydı board_id/okul/derslik korunarak bugünkü
+kimlik MAC'ine taşır ve yeni MAC ile sorgulayıp doğrular. Eski MAC tahtada yoksa
+(klon imaj ya da donanım değişimi) kayıt başka bir tahtanın olabileceğinden
+taşınmaz. Hiçbirinde kayıt yoksa bulgu bunu da belirtir. (`--mac` verilmişse ek
+sorgu yapılmaz.)
 
 ### 6) Sistem / Dağıtım / Çekirdek
 Dağıtım ve alt sürüm (ör. *Pardus ETAP GNU/Linux 23*), `lsb_release`, çekirdek
@@ -358,9 +374,11 @@ yoksa bayat mı** olduğunu birden çok kanıtla belirler:
 1. **Servis yeniden başlama korelasyonu** — `ahenk.service` başlangıç zamanı ile
    son `ConsumerBusy` zaman damgası karşılaştırılır. Hata, mevcut oturumdan
    önceyse **bayat** sayılır.
-2. **Sonraki başarı olayı** — `ConsumerBusy`'den sonra logda "Connected to
-   Pulsar" / "Message published" / mesaj alımı varsa, sorun **çözülmüş**
-   demektir. (Loglar `ahenk.log` + `ahenk.log.1` kronolojik sırayla birleştirilir.)
+2. **Sonraki başarı olayı** — servis başladıktan sonra logda "Connected to Pulsar" /
+   "Message published" / mesaj alımı varsa ve **bundan sonra Pulsar bağlantı hatası
+   yoksa** bağlantı canlı sayılır. Ahenk'in `already registered` satırı yalnızca yerel
+   kayıt kontrolüdür, **bağlantı kanıtı sayılmaz**. (Loglar `ahenk.log` + `ahenk.log.1`
+   kronolojik sırayla birleştirilir.)
 3. **Canlı TCP soketi** — `ss` (veya root ile psutil) kullanılarak Ahenk
    sürecinin broker'a (Pulsar `6650/6651`, XMPP `5222/5223`) o anki
    **ESTABLISHED** bağlantıları sayılır. Varsa, makine komut topic'ine bağlı
@@ -520,8 +538,9 @@ listelenir.
 ## Sık görülen senaryolar ve çözümleri
 
 ### A) Klon imaj / UUID çakışması (aktif ConsumerBusy)
-Aynı UUID birden çok makinede. Çakışan makinede kimliği sıfırlayıp yeniden
-kaydedin (yeni `uuid4` üretilir):
+Aynı UUID birden çok makinede. En kolayı çakışan makinede `--fix` çalıştırmaktır
+(yedek alır, kimliği sıfırlar, yeni kayıt yaptırır). Elle yapmak için kimliği
+sıfırlayıp yeniden kaydedin (yeni `uuid4` üretilir):
 
 ```bash
 sudo systemctl stop ahenk.service
@@ -541,6 +560,13 @@ Aktif Pulsar testi (otomatik) kimlik doğrulamanın da çalışıp çalışmadı
 Tahtada **kablolu ethernet** sürücüsü yüklü ve arayüz mevcut olmalı. Yalnız
 USB/WiFi adaptör varsa `etainfo.network.get()` `None` döner ve kayıt çöker.
 Sürücüyü (ör. `r8169`) ve kablo bağlantısını kontrol edin.
+
+### D) Tahta ETA'da farklı bir MAC ile kayıtlı
+Kimlik kartı seçimi değişmişse (ör. tahtaya ikinci bir kablolu kart takılmış ya da
+kart sırası değişmiş) ETA kaydı eski MAC'te kalır. **Yeniden kaydetmeyin** (yinelenen
+board_id oluşur). Eski MAC bu tahtadaki bir kartınsa `--fix` kaydı bugünkü kimlik
+MAC'ine taşır; değilse operatörden ilgili board_id kaydının MAC'ini güncellemesini
+isteyin (bkz. [5) ETA Kaydı](#5-eta-kaydı-tahta-envanteri)).
 
 ---
 
@@ -562,6 +588,10 @@ anahtarlar:
 | `active_probe` | aktif Pulsar testi sonucu `{ok, auth_ok, stage, error}` |
 | `messenger_type`, `pulsar`/`xmpp` | Bağlantı yapılandırması |
 | `school` | tahtanın kayıtlı olduğu okul/il/ilçe |
+| `eta_api` | ETA sorgusu `{backend, query_mac, result, alt_tried, alt}` (farklı MAC ile kayıt) |
+| `lider_server` | Lider kaydının sunucu tarafı doğrulaması `{short, evidence}` |
+| `fix` | yalnız `--fix` ile: `{before: {fail, warn}, actions: [{status, title, detail}], backup}` |
+| `timeline` | olay zaman çizelgesi `[[zaman, olay], …]` |
 | `send` | otomatik gönderim sonucu `{paste_url, ntfy_topic, paste_ok, ntfy_ok}` |
 | `distro`, `kernel`, `arch` | Sistem |
 | `cpu`, `board`, `bios`, `memory`, `gpu`, `phase`, `touch` | Donanım & faz |
@@ -588,12 +618,14 @@ anahtarlar:
 | Kaynak | Kullanım |
 |---|---|
 | `/etc/ahenk/ahenk.conf`, `config.d/*.conf` | UID/parola, broker, TLS, messenger_type |
-| `/etc/ahenk/ahenk.db` (salt-okur) | registration & messaging tabloları |
+| `/etc/ahenk/ahenk.db` (salt-okur; `--fix` kimlik sıfırlamada yedekleyip siler) | registration & messaging tabloları |
 | `/var/log/ahenk.log[.1]` | Olay zaman çizelgesi (ConsumerBusy, bağlantı vb.) |
 | `/sys/class/net`, `/sys/devices/.../dmi/id`, `/sys/bus/pci` | NIC, anakart/BIOS, GPU |
 | `/proc/cpuinfo`, `/proc/meminfo`, `/proc/bus/input/devices` | CPU, RAM, dokunmatik |
 | `systemctl`, `ss`, `lsb_release`, `timedatectl`, `openssl`, `ip` | Servis/ağ/sistem |
 | `etainfo.network` (içe aktarılır) | Ahenk'in kullandığı kimlik MAC'ini birebir üretir |
+| ETA API `GET /api/board/check` | Kayıt durumu, okul/birim (ETA Kayıt'ın kendi sorgusu) |
+| ETA API `POST /api/board/update` | Yalnız `--fix`: kaydın MAC'ini bugünkü kimlik MAC'ine taşır |
 
 ---
 
@@ -601,7 +633,11 @@ anahtarlar:
 
 - Parolalar raporda **maskelenir** (`e2a2…8df5`); tam parola hiçbir yerde açıkça
   gösterilmez.
-- Araç, Ahenk yapılandırmasını ve servisini **değiştirmez** (salt-okur).
+- `--fix` olmadan araç Ahenk yapılandırmasını, servisini ve sunucu kayıtlarını
+  **değiştirmez** (salt-okur). `--fix` ile yapılan her değişiklik raporda
+  listelenir; kimlik dosyaları önce `/var/backups/ahenk-debug/` altına yedeklenir.
+  Lider sunucusundaki kayıtlara hiçbir modda dokunulmaz; ETA sunucusunda yalnızca
+  `--fix`'in MAC taşıma işlemi yapılır.
 - Aktif Pulsar testi, broker'a yalnızca **tek bir test mesajı** yollar (Ahenk'in
   açılışta zaten yaptığı işlem) ve komut aboneliğine dokunmaz.
 - Otomatik gönderim açıkken rapor; `paste.rs` ve `ntfy.sh` üçüncü taraf
