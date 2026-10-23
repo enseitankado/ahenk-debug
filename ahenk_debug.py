@@ -1586,7 +1586,8 @@ _HELP_OPTIONS = [
     ("Düzeltme:", [
         ("    --fix", (), "", "bulunan sorunları otomatik düzelt: ağ (DHCP), disk, dpkg, "
                               "paketleri kur/güncelle, saat, servisi etkinleştir/başlat, "
-                              "Lider kaydını gerekirse 3 kez yeniden dene, klon/sunucu "
+                              "Lider kaydını gerekirse 3 kez yeniden dene, ETA kaydını (eski MAC bu "
+                              "tahtadaysa) bugünkü MAC'e taşı, klon/sunucu "
                               "reddinde Ahenk kimliğini sıfırla (yedekli); ardından yeniden "
                               "teşhis et. Yedekler: /var/backups/ahenk-debug (son 5)"),
     ]),
@@ -1835,6 +1836,28 @@ OUTCOME_TEXT = {
 }
 
 
+def eta_update_board_mac(backend, header, board_id, school_code, unit_name, mac,
+                         timeout=15):
+    """ETA Kayıt'ın 'Düzenle → Kaydet' isteğinin aynısı: POST {backend}/board/update.
+    Kaydın okul/derslik bilgisi korunur, yalnızca MAC (mac_id) güncellenir.
+    Dönüş: (başarılı mı, HTTP kodu, yanıt/hata metni)."""
+    payload = {"id": board_id, "school_code": int(school_code),
+               "unit_name": str(unit_name).strip(), "mac_id": mac}
+    req = urllib.request.Request("%s/board/update" % backend.rstrip("/"),
+                                 data=json.dumps(payload).encode("utf-8"), method="POST")
+    for k, v in header.items():
+        req.add_header(k, v)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "ahenk-debug")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200 <= r.status < 300, r.status, r.read(500).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return False, e.code, e.read(500).decode("utf-8", "replace")
+    except Exception as e:
+        return False, None, str(e)
+
+
 def run_fix(args, R, D):
     """--fix: ilk teşhise (D) göre düzeltmeleri sırayla uygula, yeniden teşhis et.
     Dönüş: (yeni Report, yeni D, işlem yapıldı mı)."""
@@ -2033,6 +2056,38 @@ def run_fix(args, R, D):
             except Exception as e:
                 act("başarısız", "ahenk.conf eşitlenemedi", str(e))
 
+    # 6b) ETA kaydı farklı MAC ile: eski MAC bu tahtadaki bir karta aitse kaydı bugünkü
+    # kimlik MAC'ine taşı (ETA Kayıt'ın Düzenle → Kaydet isteği). Eski MAC tahtada yoksa
+    # (klon imaj / donanım değişimi ayırt edilemez) dokunulmaz.
+    eta_moved = False
+    if eta_alt and not getattr(args, "mac", None):
+        old = (eta_alt.get("mac") or "").lower()
+        new = (D.get("live_mac") or "").lower()
+        local = {(n.get("mac") or "").lower(): n.get("interface")
+                 for n in (D.get("nics") or []) if n.get("mac")}
+        data = ((eta_alt.get("result") or {}).get("data")) or {}
+        unit = str(data.get("unit_name") or "").strip()
+        if old in local and new and data.get("board_id") and data.get("school_code") \
+                and 2 <= len(unit) <= 12:
+            backend, header = load_eta_config()
+            ok, code, resp = eta_update_board_mac(backend, header, data["board_id"],
+                                                  data["school_code"], unit, new)
+            chk = query_eta_board(new, backend, header) if ok else {}
+            eta_moved = ok and chk.get("registered") is True
+            act("yapıldı" if eta_moved else "başarısız",
+                "ETA kaydı bugünkü MAC'e taşındı (%s → %s)" % (old, new),
+                ("board_id %s · okul kodu %s · derslik '%s' korunarak yalnızca MAC "
+                 "güncellendi (eski MAC bu tahtadaki %s kartının). Yeni MAC ile sorgu: "
+                 "KAYITLI." % (data["board_id"], data["school_code"], unit, local[old]))
+                if eta_moved else
+                ("ETA sunucusu güncellemeyi %s (HTTP %s): %s" % (
+                    "kabul etti ama yeni MAC ile kayıt görünmüyor" if ok else "reddetti",
+                    code, (resp or "").strip()[:200])))
+        elif old in local:
+            act("atlandı", "ETA kaydı taşınmadı",
+                "Kayıt bilgisi eksik ya da derslik adı 2–12 karakter değil (board_id=%s, "
+                "derslik='%s')." % (data.get("board_id"), unit))
+
     # 7) Servis
     if D.get("ahenk_version") or "ahenk" in install:
         _, en, _ = run("systemctl is-enabled ahenk.service")
@@ -2086,11 +2141,14 @@ def run_fix(args, R, D):
                 time.sleep(5)
 
     # 8) Tahtadan düzeltilemeyen ETA durumları
-    if eta_alt:
-        act("düzeltilemez", "ETA kaydı farklı bir MAC ile (%s)" % eta_alt.get("mac"),
-            "ETA sunucusundaki kaydın MAC'i yalnızca sunucuda güncellenebilir; yeniden kayıt "
-            "yinelenen kayıt üretir. Operatöre: board_id ve iki MAC (raporda).")
-    elif eta_res.get("registered") is False:
+    if eta_alt and not eta_moved:
+        local_macs = {(n.get("mac") or "").lower() for n in (D.get("nics") or [])}
+        if (eta_alt.get("mac") or "").lower() not in local_macs:
+            act("düzeltilemez", "ETA kaydı farklı bir MAC ile (%s)" % eta_alt.get("mac"),
+                "Bu MAC bu tahtadaki hiçbir karta ait değil: klon imaj (kayıt başka bir "
+                "tahtanın) mı donanım değişimi mi ayırt edilemez; kayda dokunulmadı. Yeniden "
+                "kayıt yinelenen kayıt üretir. Operatöre: board_id ve iki MAC (raporda).")
+    elif not eta_alt and eta_res.get("registered") is False:
         act("düzeltilemez", "Tahta ETA'da kayıtlı değil",
             "Okul ve derslik seçimi gerekir: etapadmin ile oturum açıp ETA Kayıt'ı açın. "
             "Kayıt sonrası Ahenk otomatik kurulup başlar.")

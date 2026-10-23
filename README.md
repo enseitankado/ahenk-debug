@@ -118,9 +118,10 @@ istisnasıdır.
 | 5 | Saat NTP ile senkron değil | `timedatectl set-ntp true` + timesyncd yeniden başlatma |
 | 6 | **Klon imaj** (güncel ConsumerBusy), **veritabanı bozuk** ya da **sunucu kimliği tanımıyor** (aktif test oturumu **iki kez** reddetti) | Yedek → servisi durdur → **Ahenk kimliğini sıfırla** (DB silinir; `ahenk.conf` uid/parola/host ve `messaging.conf` Pulsar alanları boşaltılır) → yeni UUID ile yeni Lider kaydı |
 | 6 | `ahenk.conf` UID ≠ DB JID | Yedek → `ahenk.conf` veritabanına eşitlenir |
-| 7 | Servis `masked` / `disabled` | `systemctl unmask` / `enable` |
-| 7 | Servis çalışmıyor, Ahenk bekleme aşamasında (broker erişilebilir) ya da paket/kimlik değişti | `systemctl restart ahenk.service`, ardından en çok 90 sn sonuç beklenir (Pulsar bağlantısı / Lider kaydı / yeniden durma) |
-| 7 | Lider kaydı **HTTP 5xx** (ya da kimlik sıfırlandı) | Servis **3 kez** yeniden başlatılarak kayıt yeniden denenir; hepsi 5xx ise "sunucu tarafı" olarak bildirilir |
+| 7 | **ETA'da farklı MAC ile kayıt** ve eski MAC **bu tahtadaki bir kartın** (kimlik kartı seçimi değişmiş) | ETA Kayıt'ın "Düzenle → Kaydet" isteğiyle (`POST /api/board/update`) kayıt, board_id/okul/derslik korunarak **bugünkü kimlik MAC'ine taşınır**; ardından yeni MAC ile sorgulanıp doğrulanır. Yinelenen kayıt oluşmaz |
+| 8 | Servis `masked` / `disabled` | `systemctl unmask` / `enable` |
+| 8 | Servis çalışmıyor, Ahenk bekleme aşamasında (broker erişilebilir) ya da paket/kimlik değişti | `systemctl restart ahenk.service`, ardından en çok 90 sn sonuç beklenir (Pulsar bağlantısı / Lider kaydı / yeniden durma) |
+| 8 | Lider kaydı **HTTP 5xx** (ya da kimlik sıfırlandı) | Servis **3 kez** yeniden başlatılarak kayıt yeniden denenir; hepsi 5xx ise "sunucu tarafı" olarak bildirilir |
 
 **Kimlik sıfırlanmaz:** kayıt MAC'i tahtada yok ama ConsumerBusy de yoksa (klon mu
 donanım değişimi mi ayırt edilemez) — gereksiz kayıp olmaması için yalnızca bildirilir.
@@ -129,8 +130,10 @@ donanım değişimi mi ayırt edilemez) — gereksiz kayıp olmaması için yaln
 listelenir): kablo/link yok, ağ geçidi yok, DNS yok/çözemiyor, broker portu kapalı
 (güvenlik duvarı), TLS kurulamıyor (proxy), ETA API'ye erişilemiyor, Pulsar uygulama
 katmanı yanıt vermiyor, güncel `not_authorized`, Lider kaydı 3 denemede de 5xx, tahta
-ETA'da kayıtlı değil (okul/derslik seçimi gerekir), ETA kaydı farklı MAC ile (MAC
-yalnızca sunucuda güncellenebilir). ETA ve Lider sunucularındaki kayıtlara dokunulmaz.
+ETA'da kayıtlı değil (okul/derslik seçimi gerekir), ETA kaydı **bu tahtada olmayan** bir
+MAC ile (klon imaj mı donanım değişimi mi ayırt edilemez; kayıt başka bir tahtanın
+olabileceğinden taşınmaz). Lider sunucusundaki kayıtlara dokunulmaz; ETA sunucusunda
+yalnızca yukarıdaki MAC taşıma yapılır.
 
 **Yedekler:** kimlik dosyalarını değiştiren her işlemden önce `ahenk.conf`,
 `messaging.conf` ve `ahenk.db`, `/var/backups/ahenk-debug/<YYYYmmdd-HHMMSS>/` altına
