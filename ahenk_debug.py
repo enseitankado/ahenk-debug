@@ -130,20 +130,13 @@ _PROGRESS_TTY = sys.stderr.isatty()
 
 
 def progress(msg):
-    if _PROGRESS_TTY:
-        width = max(20, shutil.get_terminal_size((80, 24)).columns - 4)
-        if len(msg) > width:
-            msg = msg[:width - 1] + "…"     # taşarsa yerinde güncelleme bozulur
-        sys.stderr.write("\r\033[K" + grey("⏳ " + msg))
-    else:
-        sys.stderr.write("· %s\n" % msg)
+    # Birikimli: her adım kendi satırında kalır (üzerine yazılmaz), simge yok.
+    sys.stderr.write(grey("ahenk-debug: ") + msg + "\n")
     sys.stderr.flush()
 
 
 def progress_clear():
-    if _PROGRESS_TTY:
-        sys.stderr.write("\r\033[K")
-        sys.stderr.flush()
+    pass
 
 
 class Report:
@@ -159,7 +152,8 @@ class Report:
 
     # --- bölüm/satır ---
     def section(self, title):
-        progress("Teşhis %s..." % title)
+        desc = re.sub(r"^\s*\d+\)\s*", "", title)
+        progress(desc.lower() + " denetleniyor")
         self._cur = (title, [])
         self.sections.append(self._cur)
         return self
@@ -213,7 +207,10 @@ class Report:
             if not self.fix["actions"]:
                 out.append("  (düzeltilecek bir şey bulunamadı)")
             out.append(grey("  Aşağıdaki rapor düzeltme SONRASI durumdur."))
-        for title, lines in self.sections:
+        def _secnum(t):
+            m = re.match(r"\s*(\d+)\)", t)
+            return int(m.group(1)) if m else 99
+        for title, lines in sorted(self.sections, key=lambda s: _secnum(s[0])):
             out.append("")
             out.append(cyan("▸ " + title))
             out.extend(lines)
@@ -683,7 +680,7 @@ def ahenk_repo_status(installed, online=True):
     return res
 
 def service_down_reason(D):
-    """1. adımdaki servis durumuna göre broker bağlantısı olmamasının nedeni.
+    """3. bölümdeki servis durumuna göre broker bağlantısı olmamasının nedeni.
     Servis çalışıyorsa None."""
     if D.get("ahenk_version") is None:
         return "Ahenk kurulu değil"
@@ -707,7 +704,7 @@ def service_down_reason(D):
     elif enabled == "enabled":
         why += "; servis etkin (enabled): sonraki açılışta başlar, hemen başlatmak " \
                "için 'sudo systemctl start ahenk.service'"
-    return "1. adım: %s/%s — %s" % (active, enabled, why)
+    return "3. bölüm: %s/%s — %s" % (active, enabled, why)
 
 
 # ----------------------------------------------------------------------------
@@ -2253,7 +2250,7 @@ def diagnose(args):
         log_since = boot_dt        # önceki açılışın oturumu bu açılışa ait değil
 
     # ---------------- 1) Genel / servis / yerel sağlık ----------------
-    R.section("1) Genel Durum, Servis ve Yerel Sağlık")
+    R.section("3) Genel Durum, Servis ve Yerel Sağlık")
     rc, pkg, _ = run("dpkg-query -W -f='${Version}' ahenk")
     ahenk_installed = rc == 0 and bool(pkg)
     D["ahenk_version"] = pkg if ahenk_installed else None
@@ -2298,7 +2295,7 @@ def diagnose(args):
                   "%s\n%s" % (etareg_reason(), etareg_fix))
 
     # Sürüm: depodaki adaydan eski mi?
-    progress("Teşhis 1) depodaki Ahenk ve ETA Kayıt sürümleri denetleniyor...")
+    progress("depodaki ahenk ve eta-register sürümleri alınıyor")
     repo = ahenk_repo_status(pkg if ahenk_installed else None, online=not args.no_net)
     D["ahenk_repo"] = repo
     if repo["published"]:
@@ -2417,7 +2414,7 @@ def diagnose(args):
             R.finding(FAIL, "Ahenk başladı, Lider kaydını tamamlayamayınca kendini durdurdu",
                       "%s. Lider'e kayıt denemeleri sonuçsuz kaldı; Lider kaydı olmadan "
                       "mesajlaşma kimliği oluşmadığı için Ahenk kendini durdurdu (%s).\n"
-                      "Kayıt ucuna erişimi (4. bölüm) ve Lider'in yanıtını (günlük) inceleyin; "
+                      "Kayıt ucuna erişimi (6. bölüm) ve Lider'in yanıtını (günlük) inceleyin; "
                       "sonra: sudo systemctl start ahenk.service (ya da ETA Kayıt → Düzenle → "
                       "Kaydet)." % (started, hms(st["last"])))
         elif self_stopped and why == "pulsar":
@@ -2426,7 +2423,7 @@ def diagnose(args):
                       "bağlanamadı ve kendini durdurdu (%s).\n"
                       "Bilinçli durdurma olduğu için kendiliğinden yeniden başlamaz; tahta "
                       "yeniden açılana ya da servis başlatılana kadar çevrimdışı kalır.\n"
-                      "Önce ağ/Pulsar erişimini düzeltin (3–4. bölüm), sonra: sudo systemctl "
+                      "Önce ağ/Pulsar erişimini düzeltin (5–6. bölüm), sonra: sudo systemctl "
                       "start ahenk.service (ya da ETA Kayıt → Düzenle → Kaydet)."
                       % (started, st["last"]))
         elif self_stopped:
@@ -2544,7 +2541,7 @@ def diagnose(args):
     R.line("Yetki", "root (tam erişim)", OK)
 
     # ---------------- 2) Kimlik ----------------
-    R.section("2) Ahenk Kimliği ve Lider Kaydı (UUID / Parola)")
+    R.section("4) Ahenk Kimliği ve Lider Kaydı (UUID / Parola)")
     db_path = args.db or cfg(cp, "BASE", "dbPath", DEFAULT_DB)
     db = load_db(db_path)
     D["db"] = {"path": db_path, "ok": db["ok"], "error": db["error"]}
@@ -2585,13 +2582,13 @@ def diagnose(args):
             R.finding(FAIL, "Lider kaydı (Ahenk) tamamlanmamış (registered=0)",
                       "Bu, Ahenk'in Lider'e kaydıdır; ETA kaydından ayrıdır:\n"
                       "· ETA kaydı — tahtanın envanteri (okul, derslik adı, board_id). ETA "
-                      "Kayıt programı yapar (api-etap.eba.gov.tr). Durumu: 5. bölüm.\n"
+                      "Kayıt programı yapar (api-etap.eba.gov.tr). Durumu: 7. bölüm.\n"
                       "· Lider kaydı — Ahenk'in mesajlaşma kimliği (UUID/parola). Ahenk servisi "
                       "yapar (register-liderahenk.eba.gov.tr). ETA kaydı başarılı olsa bile "
                       "ayrıca tamamlanmalıdır; tamamlanmadan tahta Lider'e bağlanamaz.\n%s" % (
                           ("Neden: Lider kayıt isteği başarısız (%s) — 'Lider kayıt sunucusu' "
                            "bulgusuna bakın." % ", ".join(rerr["kinds"])) if rerr.get("count")
-                          else "Neden günlükte görünmüyor; kayıt ucuna erişimi (4. bölüm) "
+                          else "Neden günlükte görünmüyor; kayıt ucuna erişimi (6. bölüm) "
                                "inceleyin."))
         R.line("Kayıt zamanı", db_reg["timestamp"], INFO)
         mv = re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-([0-9a-f])", (db_reg["jid"] or "").lower())
@@ -2639,7 +2636,7 @@ def diagnose(args):
         R.note("Exclusive: aynı UUID'yi ikinci bir makine kullanırsa ConsumerBusy alır.")
 
     # ---------------- 3) Kimlik MAC'i + klon tespiti ----------------
-    R.section("3) Kimlik MAC'i, Klon/Çakışma ve Canlı Bağlantı")
+    R.section("5) Kimlik MAC'i, Klon/Çakışma ve Canlı Bağlantı")
     nics = enumerate_nics()
     D["nics"] = nics
     ident = compute_identity_mac(nics)
@@ -2705,7 +2702,7 @@ def diagnose(args):
                       "seçimi değişmiş (ilk PCI, sürücülü, kablosuz olmayan kart; sürücü "
                       "yüklenmemesi, arayüz adı/sıra değişimi ya da yeni imaj nedeniyle).\n"
                       "Ahenk'in kimliği (UUID) MAC'e bağlı değildir, yeniden kayıt "
-                      "GEREKMEZ. Ancak ETA kaydı eski MAC ile olabilir: 5. bölüme bakın."
+                      "GEREKMEZ. Ancak ETA kaydı eski MAC ile olabilir: 7. bölüme bakın."
                       % (m, local[m]["interface"], live_mac))
         else:
             R.line("Kayıt MAC vs canlı MAC", "FARKLI — kayıt MAC'i bu tahtada yok", FAIL)
@@ -2718,7 +2715,7 @@ def diagnose(args):
                       "(ConsumerBusy) / çevrimdışı. ÇÖZÜM: bu tahtada yeniden kayıt "
                       "(ahenk clean + servis restart) ile yeni UUID.\n"
                       "2) DONANIM DEĞİŞİMİ: OPS modülü ya da anakart değiştirilmiş; UUID "
-                      "bu tahtanındır. ETA kaydı eski MAC ile kalmıştır (5. bölüm); "
+                      "bu tahtanındır. ETA kaydı eski MAC ile kalmıştır (7. bölüm); "
                       "operatörden kaydın MAC'ini güncellemesini isteyin.\n"
                       "Ayırt etmek için: ConsumerBusy (aynı UUID başka tahtada çalışıyor "
                       "mu?) ve tahtanın servis geçmişi." % (", ".join(reg_macs), live_mac))
@@ -2856,7 +2853,7 @@ def diagnose(args):
     else:
         R.line("Aktif Pulsar testi", "deneniyor (adım başına en çok %d sn)..." %
                PROBE_TIMEOUT, INFO)
-        progress("Teşhis 3) aktif Pulsar testi (adım başına en çok %d sn)..." % PROBE_TIMEOUT)
+        progress("aktif pulsar testi yapılıyor (adım başına en çok %d sn)" % PROBE_TIMEOUT)
         probe = active_pulsar_probe(cp, registered=D.get("registered"))
         D["active_probe"] = probe
         if probe.get("skipped"):
@@ -2966,7 +2963,7 @@ def diagnose(args):
                       ", UUID sürüm 3" if li.get("uuid_version") == "3" else ""))
 
     # ---------------- 4) Bağlantı / Temel TCP / DNS ----------------
-    R.section("4) Bağlantı, Temel TCP ve DNS")
+    R.section("6) Bağlantı, Temel TCP ve DNS")
     messenger_type = (cfg(cp, "MESSENGER", "messenger_type", "xmpp") or "xmpp").lower()
     D["messenger_type"] = messenger_type
     R.line("messenger_type", messenger_type, INFO)
@@ -3178,7 +3175,7 @@ def diagnose(args):
             R.note(be["explanation"])
 
     # ---------------- 5) ETA Kayıt Sunucusu (Okul/Şehir/İlçe) ----------------
-    R.section("5) ETA Kaydı (tahta envanteri) — Okul / Şehir / İlçe")
+    R.section("7) ETA Kaydı (tahta envanteri) — Okul / Şehir / İlçe")
     eta_backend, eta_header = load_eta_config()
     R.line("API tabanı", eta_backend, INFO)
     query_mac = args.mac or live_mac
@@ -3192,7 +3189,7 @@ def diagnose(args):
         R.line("ETA sorgusu", "kimlik MAC'i yok — sorgu yapılamadı", FAIL)
     else:
         R.line("Sorgu MAC", query_mac, INFO)
-        progress("Teşhis 5) ETA sunucusu sorgulanıyor...")
+        progress("eta sunucusu sorgulanıyor")
         eta = query_eta_board(query_mac, eta_backend, eta_header)
         D["eta_api"]["result"] = {k: v for k, v in eta.items() if k != "raw"}
         alt, alt_tried = None, []
@@ -3307,7 +3304,7 @@ def diagnose(args):
                       platform.node(), reg_err["last"]))
 
     # ---------------- 6) Sistem / Dağıtım / Çekirdek ----------------
-    R.section("6) Sistem / Dağıtım / Çekirdek")
+    R.section("1) Sistem / Dağıtım / Çekirdek")
     distro = None
     osrel = read_file("/etc/os-release") or ""
     m = re.search(r'PRETTY_NAME="?([^"\n]+)', osrel)
@@ -3340,7 +3337,7 @@ def diagnose(args):
                   "Saat kayması TLS sertifika doğrulamasını ve zaman damgalarını bozar.")
 
     # ---------------- 7) Donanım / Faz / Dokunmatik ----------------
-    R.section("7) Donanım, Faz ve Dokunmatik")
+    R.section("2) Donanım, Faz ve Dokunmatik")
     brand = cpu_brand()
     board_vendor = readline_strip(os.path.join(DMI, "board_vendor"))
     board_name = readline_strip(os.path.join(DMI, "board_name"))
@@ -3391,7 +3388,26 @@ def diagnose(args):
             R.line("Dokunmatik", "%s%s  drv=%s handlers=%s" %
                    (t["name"], vp, t["driver"], t["handlers"]), INFO)
     else:
-        R.line("Dokunmatik", "tespit edilemedi (USB/HID girdi cihazı yok?)", WARN)
+        R.line("Dokunmatik", "tespit edilemedi (USB/HID girdi cihazı yok)", WARN)
+        sch = D.get("school") or {}
+        mac = D.get("live_mac") or "?"
+        model = "%s %s" % (board_vendor or "?", board_name or "?")
+        okul = ("%s (kod %s)" % (sch.get("school"), sch.get("code"))
+                if sch.get("school") else "ETA'da kayıtlı değil")
+        R.finding(WARN, "Dokunmatik çerçeve USB'de görünmüyor",
+                  "Dokunmatik donanımı USB arabiriminde hiç görünmüyor; çerçeve arızalı ya da "
+                  "bağlı değil (sürücü sorunu değil). Tahta USB fareyle kullanılabilir, ancak "
+                  "ETA Kayıt dokunmatik denetimine takıldığı için kayıt ekranına geçemez.\n"
+                  "Tahta Lider'de yönetilecekse ETA ekibinden bu tahta için kayıt desteği "
+                  "isteyin. E-posta şablonu:\n"
+                  "  Kime  : eta@pardus.org.tr\n"
+                  "  Konu  : Dokunmatiği arızalı tahta - ETA kayıt desteği\n"
+                  "  İçerik: Okul: %s · MAC: %s · Model: %s · Durum: dokunmatik çerçeve "
+                  "arızalı ve temin edilemiyor (eski model), tahta USB fareyle kullanılıyor; "
+                  "ETA Kayıt dokunmatik denetimine takıldığı için tahtayı kaydedemiyoruz. "
+                  "Bu tahta için kayıt desteği rica ederiz.\n"
+                  "Not: Tahta ETA'da kaydedildikten sonra 'ahenk-debug --fix' Ahenk'i kurup "
+                  "Lider'e bağlar." % (okul, mac, model))
 
     # ---------------- Olumlu özet ----------------
     if not any(f[0] == FAIL for f in R.findings):
@@ -3483,7 +3499,6 @@ def main():
         R, D, fixed_any = run_fix(args, R, D)
 
     # ---------------- Çıktı ----------------
-    progress_clear()
     if args.json:
         D["findings"] = [{"severity": s, "title": t, "detail": d}
                          for s, t, d in R.findings]
@@ -3509,7 +3524,7 @@ def main():
     elif not args.no_send:
         # paste düz metin gösterir: renk kodlarını ve sekmeleri temizleyerek gönder
         plain = clean_for_paste(R.render())
-        progress("Rapor operatöre gönderiliyor...")
+        progress("rapor operatöre gönderiliyor")
         # 1) Tam raporu paste.rs'e yükle
         ok, url, perr = upload_paste(plain)
         # 2) Özet + linki ntfy.sh konusuna it

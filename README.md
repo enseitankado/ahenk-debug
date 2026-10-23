@@ -185,7 +185,42 @@ yeterli. (Ahenk 2.0.10 için geçerlidir.)
 
 ## Rapor bölümleri
 
-### 1) Genel Durum, Servis ve Yerel Sağlık
+### 1) Sistem / Dağıtım / Çekirdek
+Dağıtım ve alt sürüm (ör. *Pardus ETAP GNU/Linux 23*), `lsb_release`, çekirdek
+sürümü, mimari, hostname, **çalışma süresi** (son açılıştan bu yana; açılış zamanıyla), **NTP saat senkronu** (saat kayması TLS doğrulamasını
+ve zaman damgalarını bozar).
+
+### 2) Donanım, Faz ve Dokunmatik
+İşlemci, anakart (üretici/model), BIOS, RAM, GPU(lar) + sürücü; **Faz 1/2/3
+tahmini**; **dokunmatik donanımı + sürücüsü**
+(`/proc/bus/input/devices` + USB kimliği + bağlı çekirdek sürücüsü).
+
+### Özet / Teşhis
+Tüm bulguları **önem sırasına** göre (FAIL → WARN → OK → INFO), nedeniyle ve
+önerilen çözümüyle listeler. Ahenk kendini durdurmuşsa bulgu nedenine göre kısa ve
+olay sırasıyla yazılır (ör. "Ahenk başladı, Lider kaydı başarısız olunca kendini
+durdurdu (HTTP 500)" ya da "Ahenk Pulsar'a bağlanamayınca kendini durdurdu").
+
+### Zaman çizelgesi
+Raporun en sonunda, **son açılıştan bu yana** olaylar zaman sırasıyla listelenir
+(her olay türünün son kaydı): tahtanın açılışı, ETA Kayıt denetimi ve kaydı/
+güncellemesi, ETA Kayıt'ın Ahenk kurulumu ve servis başlatması, Ahenk servisinin
+başlaması, Lider kaydı (başarılı/başarısız), Pulsar bağlantısı ve hataları,
+ConsumerBusy, son başarılı yayın, Ahenk'in kendini durdurması ve raporun alındığı
+an. Örnek:
+
+```
+2026-10-21 11:42:05  ETA Kayıt: ETA kaydı kaydedildi/güncellendi (derslik: Derslik002)
+2026-10-21 11:42:19  ETA Kayıt: Ahenk servisini etkinleştirip başlattı
+2026-10-21 11:42:20  Ahenk servisi başladı
+2026-10-21 11:42:23  Ahenk: Lider kayıt isteği başarısız — HTTP 500 ×3 (son: 11:42:27)
+2026-10-21 11:42:29  Ahenk kendini durdurdu (Lider kaydı başarısız)
+```
+JSON çıktısında `timeline` alanındadır.
+
+---
+
+### 3) Genel Durum, Servis ve Yerel Sağlık
 Ahenk paket sürümü, `ahenk.service` aktif/etkin durumu ve başlangıç zamanı.
 
 Ahenk ETAP imajında (ISO) gelmez; tahtaya **yalnızca ETA Kayıt** kurar. ETA
@@ -240,7 +275,7 @@ Ayrıca Ahenk'i **yerelde sekteye uğratan** sorunlar:
   `FileNotFoundError` alır. Bu satır hata sayısına katılmaz, "kayıt öncesi BEKLENEN
   hata" diye ayrıca gösterilir.
 
-### 2) Ahenk Kimliği ve Lider Kaydı (UUID / Parola)
+### 4) Ahenk Kimliği ve Lider Kaydı (UUID / Parola)
 DB'deki UUID (jid), parola (maskeli), `registered` bayrağı, kayıt zaman damgası,
 **DB bütünlük kontrolü** (`PRAGMA integrity_check` — bozuk/kilitli DB Ahenk'i
 durdurur). Root ile: **`ahenk.conf` UID/parola ile DB'nin tutarlılığı** ve Pulsar
@@ -257,7 +292,7 @@ ve Pulsar adres kontrolleri hata vermez, "kayıt tamamlanınca yazılır" diye b
 
 İki kayıt birbirinden ayrıdır ve rapor bunu açıkça belirtir:
 
-| | ETA kaydı (5. bölüm) | Lider kaydı (2. bölüm) |
+| | ETA kaydı (7. bölüm) | Lider kaydı (4. bölüm) |
 |---|---|---|
 | Ne | tahtanın envanteri: okul, derslik adı, board_id | Ahenk'in mesajlaşma kimliği: UUID/parola |
 | Kim yapar | ETA Kayıt programı | Ahenk servisi |
@@ -265,7 +300,7 @@ ve Pulsar adres kontrolleri hata vermez, "kayıt tamamlanınca yazılır" diye b
 
 `registered` **yerel** bir bayraktır (`/etc/ahenk/ahenk.db`): Lider'in kaydı geçmişte
 kabul ettiğini gösterir, bugün hâlâ geçerli olduğunu doğrulamaz (Lider'de ajan
-silinse bile 1 kalır ve Ahenk yeniden kayıt olmaz). Bu yüzden rapor, 3. bölümde
+silinse bile 1 kalır ve Ahenk yeniden kayıt olmaz). Bu yüzden rapor, 5. bölümde
 **"Lider kaydı (sunucu tarafı)"** satırını ayrıca verir:
 - **sunucu tanıyor** — Ahenk bu kimlikle Pulsar'a bağlı ya da aktif test kimlik
   doğrulamasını geçti (OK);
@@ -292,7 +327,7 @@ neden büyük olasılıkla sunucunun bu kimliği artık tanımamasıdır: Ahenk 
 Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
 (LDAP dizin nesnesi) yalnızca bilgi olarak gösterilir, boş olması bulgu üretmez.
 
-### 3) Kimlik MAC'i, Klon/Çakışma ve Canlı Bağlantı
+### 5) Kimlik MAC'i, Klon/Çakışma ve Canlı Bağlantı
 - Tüm ağ arayüzleri (MAC, sürücü, veri yolu, kablosuz/kablolu, durum).
 - Seçilen **kimlik MAC'i** ve `etainfo.network`'ün gerçek sonucu (çökerse yakalar
   — bu başlı başına bir teşhistir).
@@ -306,7 +341,7 @@ Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
     değişimi"; iki olasılık ve çözümleri ayrı ayrı açıklanır.
 - **Canlı bağlantı doğrulaması** (aşağıdaki bölüme bakın).
 
-### 4) Bağlantı, Temel TCP ve DNS
+### 6) Bağlantı, Temel TCP ve DNS
 Önce **temel ağ katmanı** (root gerektirmeden, her zaman):
 - **Kablolu arayüz linki** — kimlik arayüzünün `carrier`/`operstate`/IPv4/hız
   durumu. Kablo yoksa (carrier=0) veya IP yoksa hiçbir sunucuya ulaşılamaz (FAIL).
@@ -320,7 +355,7 @@ Sonra (root + ağ ile) derin testler: Pulsar/XMPP için **DNS → TCP → TLS el
 sıkışması → sertifika bitişi**; kayıt (register) ucu erişimi; logdaki son
 başarılı yayın ve son hata.
 
-### 5) ETA Kaydı (tahta envanteri)
+### 7) ETA Kaydı (tahta envanteri)
 Tahtanın **kayıtlı olduğu okul / şehir / ilçe / birim** bilgisini ve kayıt
 durumunu gösterir. Bilgiler her çalıştırmada, tahtanın kimlik MAC'iyle ETA
 sunucusuna yapılan `GET /api/board/check?mac=…` sorgusundan (ETA Kayıt'ın kendi
@@ -341,41 +376,6 @@ kimlik MAC'ine taşır ve yeni MAC ile sorgulayıp doğrular. Eski MAC tahtada y
 taşınmaz. Hiçbirinde kayıt yoksa bulgu bunu da belirtir. (`--mac` verilmişse ek
 sorgu yapılmaz.)
 
-### 6) Sistem / Dağıtım / Çekirdek
-Dağıtım ve alt sürüm (ör. *Pardus ETAP GNU/Linux 23*), `lsb_release`, çekirdek
-sürümü, mimari, hostname, **çalışma süresi** (son açılıştan bu yana; açılış zamanıyla), **NTP saat senkronu** (saat kayması TLS doğrulamasını
-ve zaman damgalarını bozar).
-
-### 7) Donanım, Faz ve Dokunmatik
-İşlemci, anakart (üretici/model), BIOS, RAM, GPU(lar) + sürücü; **Faz 1/2/3
-tahmini**; **dokunmatik donanımı + sürücüsü**
-(`/proc/bus/input/devices` + USB kimliği + bağlı çekirdek sürücüsü).
-
-### Özet / Teşhis
-Tüm bulguları **önem sırasına** göre (FAIL → WARN → OK → INFO), nedeniyle ve
-önerilen çözümüyle listeler. Ahenk kendini durdurmuşsa bulgu nedenine göre kısa ve
-olay sırasıyla yazılır (ör. "Ahenk başladı, Lider kaydı başarısız olunca kendini
-durdurdu (HTTP 500)" ya da "Ahenk Pulsar'a bağlanamayınca kendini durdurdu").
-
-### Zaman çizelgesi
-Raporun en sonunda, **son açılıştan bu yana** olaylar zaman sırasıyla listelenir
-(her olay türünün son kaydı): tahtanın açılışı, ETA Kayıt denetimi ve kaydı/
-güncellemesi, ETA Kayıt'ın Ahenk kurulumu ve servis başlatması, Ahenk servisinin
-başlaması, Lider kaydı (başarılı/başarısız), Pulsar bağlantısı ve hataları,
-ConsumerBusy, son başarılı yayın, Ahenk'in kendini durdurması ve raporun alındığı
-an. Örnek:
-
-```
-2026-10-21 11:42:05  ETA Kayıt: ETA kaydı kaydedildi/güncellendi (derslik: Derslik002)
-2026-10-21 11:42:19  ETA Kayıt: Ahenk servisini etkinleştirip başlattı
-2026-10-21 11:42:20  Ahenk servisi başladı
-2026-10-21 11:42:23  Ahenk: Lider kayıt isteği başarısız — HTTP 500 ×3 (son: 11:42:27)
-2026-10-21 11:42:29  Ahenk kendini durdurdu (Lider kaydı başarısız)
-```
-JSON çıktısında `timeline` alanındadır.
-
----
-
 ## Canlı bağlantı doğrulaması (bayat log ≠ güncel hata)
 
 **Analiz penceresi:** Ahenk günlükleri yalnızca **Ahenk'in kendi (son) oturumu** için
@@ -383,7 +383,7 @@ değerlendirilir: servisin son başlangıcından (`ActiveEnterTimestamp`) bu yan
 bu açılışta hiç başlamadıysa pencere tahtanın açılışıdır. Öncesindeki ERROR/WARN
 kayıtları (önceki oturumlar ve açılışlar) **ekrana basılmaz ve değerlendirilmez**;
 sayımlar (ör. "Pulsar bağlantı hataları: N kez") yalnızca bu pencereyi kapsar. ETA Kayıt
-günlüğü de yalnızca bu açılıştan beri okunur. Pencere raporun 1. bölümünde "Günlük
+günlüğü de yalnızca bu açılıştan beri okunur. Pencere raporun 3. bölümünde "Günlük
 analizi" satırında yazar.
 
 Loglardaki `ConsumerBusy` kayıtları **eski bir oturuma ait olup artık geçerli
