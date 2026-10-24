@@ -3538,12 +3538,10 @@ def main():
         nok, nerr = notify_ntfy(topic, title, summary, click=url, priority=prio, tags=tags)
         disp_topic = topic if topic.startswith("http") else "%s/%s" % (NTFY_BASE, topic)
         D["send"] = {"paste_url": url, "ntfy_topic": disp_topic,
-                     "paste_ok": ok, "ntfy_ok": nok}
-        progress_clear()
-        # Başarıda sessiz; yalnızca gönderilemezse bildir (rapor elle iletilmeli)
-        if not nok:
-            reason = nerr or perr or "bilinmeyen hata"
-            print("\nRapor operatöre gönderilemedi: %s" % reason)
+                     "paste_ok": ok, "ntfy_ok": nok,
+                     "error": (nerr or perr) if not nok else None}
+        # Gönderim sonucu ekrana basılmaz; başarısızlık yalnızca JSON'daki
+        # send.error alanında ve operatöre giden bildirimin gelmemesiyle anlaşılır.
 
     # çıkış kodu: FAIL varsa 2 (--fix işlem yaptıysa 4), WARN varsa 1, yoksa 0
     if any(f[0] == FAIL for f in R.findings):
