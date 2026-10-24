@@ -3524,7 +3524,6 @@ def main():
     elif not args.no_send:
         # paste düz metin gösterir: renk kodlarını ve sekmeleri temizleyerek gönder
         plain = clean_for_paste(R.render())
-        progress("rapor operatöre gönderiliyor")
         # 1) Tam raporu paste.rs'e yükle
         ok, url, perr = upload_paste(plain)
         # 2) Özet + linki ntfy.sh konusuna it
