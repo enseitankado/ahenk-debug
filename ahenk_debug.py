@@ -1625,7 +1625,7 @@ _HELP_OPTIONS = [
         ("    --fix", (), "", "bulunan sorunları otomatik düzelt: ağ (DHCP), disk, dpkg, "
                               "paketleri kur/güncelle, saat, servisi etkinleştir/başlat, "
                               "Lider kaydını gerekirse 3 kez yeniden dene, eski mimari kimlikte ya "
-                              "da Ahenk < 2.0.9 ise Ahenk'i purge edip yeniden kur, "
+                              "da Ahenk < 2.0.9 ise eski mimariyi sistemden kaldır, "
                               "ETA kaydını (eski MAC bu "
                               "tahtadaysa) bugünkü MAC'e taşı, klon/sunucu "
                               "reddinde Ahenk kimliğini sıfırla (yedekli); ardından yeniden "
@@ -2015,8 +2015,9 @@ def run_fix(args, R, D):
                     rc, o, e = fix_run(["apt-get", "install"] + APT_OPTS + ["ahenk"], 900)
                 purged = rc == 0
                 act("yapıldı" if purged else "başarısız",
-                    "Ahenk purge edilip yeniden kuruldu (yeni uuid4 ile Lider kaydı yapılacak)",
-                    ("Neden: %s — Lider eski mimariyi artık desteklemiyor.\nYedek: %s\n"
+                    "Eski mimari sistemden kaldırılıyor (yeni uuid4 ile Lider kaydı yapılacak)",
+                    ("Neden: %s — Lider eski mimariyi artık desteklemiyor.\nAhenk paketi "
+                     "ayarlarıyla kaldırılıp yeniden kuruldu.\nYedek: %s\n"
                      "Not: eski ajan kaydı Lider'de sahipsiz kalır." % ("; ".join(why), backup_dir))
                     if purged else
                     "AHENK KURULU DEĞİL — yeniden kurulum başarısız: %s\nElle: sudo apt-get "
@@ -3012,7 +3013,7 @@ def diagnose(args):
             cause = ("Neden: Pulsar sunucusu tahtanın kimliğini REDDEDİYOR (aktif test)%s. "
                      "Çözüm: %s (--fix bunu yapar)." % (
                          " — kimlik eski mimariden (LDAP dönemi)" if li.get("legacy") else "",
-                         "Ahenk'i purge edip yeniden kurmak" if li.get("legacy") else
+                         "eski mimariyi sistemden kaldırmak" if li.get("legacy") else
                          "Ahenk kimliğini sıfırlayıp yeniden kayıt"))
         elif pr.get("failed_stage"):
             cause = "Neden: %s" % probe_layer_verdict(pr)
@@ -3034,8 +3035,8 @@ def diagnose(args):
         R.finding(WARN, "Ahenk kimliği eski mimariden (LDAP dönemi)",
                   "Kimlik LDAP'lı dönemde oluşturulmuş (kayıt %s%s%s). Mevcut mimaride Pulsar "
                   "sunucusu bu kimlikleri tanımayabilir; Ahenk yerel kaydı 'var' gördüğü için "
-                  "('already registered') yeniden kayıt olmaz. --fix Ahenk'i purge edip "
-                  "yeniden kurar; tahta yeni uuid4 kimlikle kaydolur." % (
+                  "('already registered') yeniden kayıt olmaz. --fix eski mimariyi sistemden "
+                  "kaldırır; tahta yeni uuid4 kimlikle kaydolur." % (
                       li.get("timestamp"), "; " if li.get("sources") else "",
                       ", ".join(li.get("sources") or [])))
 

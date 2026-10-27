@@ -326,7 +326,8 @@ engellemez. Rapor "Kimlik dönemi: ESKİ MİMARİ" satırında hangi kaynakta g�
 neden büyük olasılıkla sunucunun bu kimliği artık tanımamasıdır: Ahenk yerel kaydı
 "var" gördüğü için yeniden kayıt olmaz. Lider eski mimariyi artık desteklemediği
 için `--fix` böyle bir tahtada (ya da Ahenk 2.0.9'dan eskiyse) bağlantı durumuna
-bakmadan Ahenk'i **purge edip yeniden kurar**; tahta yeni uuid4 kimlikle kaydolur.
+bakmadan **eski mimariyi sistemden kaldırır** (Ahenk paketi ayarlarıyla purge edilip
+yeniden kurulur); tahta yeni uuid4 kimlikle kaydolur.
 
 Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
 (LDAP dizin nesnesi) yalnızca bilgi olarak gösterilir, boş olması bulgu üretmez.
