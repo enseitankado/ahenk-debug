@@ -1624,7 +1624,9 @@ _HELP_OPTIONS = [
     ("Düzeltme:", [
         ("    --fix", (), "", "bulunan sorunları otomatik düzelt: ağ (DHCP), disk, dpkg, "
                               "paketleri kur/güncelle, saat, servisi etkinleştir/başlat, "
-                              "Lider kaydını gerekirse 3 kez yeniden dene, ETA kaydını (eski MAC bu "
+                              "Lider kaydını gerekirse 3 kez yeniden dene, eski mimari kimlikte ya "
+                              "da Ahenk < 2.0.9 ise Ahenk'i purge edip yeniden kur, "
+                              "ETA kaydını (eski MAC bu "
                               "tahtadaysa) bugünkü MAC'e taşı, klon/sunucu "
                               "reddinde Ahenk kimliğini sıfırla (yedekli); ardından yeniden "
                               "teşhis et. Yedekler: /var/backups/ahenk-debug (son 5)"),
@@ -1972,6 +1974,58 @@ def run_fix(args, R, D):
         act("yapıldı" if rc == 0 else "başarısız", "Yarım kalmış paket işlemleri tamamlandı "
             "(dpkg --configure -a)", "" if rc == 0 else last_line(e or o))
 
+    # 3b) Eski mimari kimlik (UUID sürüm 3 / LDAP DN) ya da 2.0.9'dan eski Ahenk: Lider
+    # bu mimariyi artık desteklemiyor ve bağlantıyı atıyor. Paket listesi güncellenir,
+    # servis durdurulur, Ahenk purge edilip yeniden kurulur; yeni uuid4 ile kayıt olur.
+    purged = False
+    apt_updated = False
+    li = D.get("legacy_identity") or {}
+    ver = D.get("ahenk_version")
+    old_ver = bool(ver) and version_lt(ver, "2.0.9")
+    if ver and (li.get("legacy") or old_ver):
+        why = []
+        if li.get("legacy"):
+            why.append("eski mimari kimlik (%s)" % ", ".join(
+                x for x in ("UUID sürüm %s" % li.get("uuid_version")
+                            if li.get("uuid_version") == "3" else "",
+                            "LDAP DN dolu" if li.get("ldap_dn") else "") if x))
+        if old_ver:
+            why.append("Ahenk %s < 2.0.9" % ver)
+        rc, o, e = fix_run(["apt-get", "update"], 300)
+        apt_updated = rc == 0
+        act("yapıldı" if rc == 0 else "başarısız", "Paket listeleri güncellendi (apt update)",
+            "" if rc == 0 else last_line(e or o))
+        try:
+            backup_dir = backup_ahenk_files(db_path)
+        except Exception as ex:
+            backup_dir = None
+            act("başarısız", "Yedek alınamadı — Ahenk purge edilmedi", str(ex))
+        if backup_dir:
+            fix_run(["systemctl", "stop", "ahenk.service"], 60)
+            rc, o, e = fix_run(["apt-get", "purge"] + APT_OPTS + ["ahenk"], 600)
+            if rc != 0:
+                act("başarısız", "Ahenk purge edilemedi", last_line(e or o))
+            else:
+                for f in (db_path, "/var/run/ahenkd.pid", "/run/ahenkd.pid"):
+                    try:
+                        if f and os.path.exists(f):
+                            os.remove(f)
+                    except OSError:
+                        pass
+                rc, o, e = fix_run(["apt-get", "install"] + APT_OPTS + ["ahenk"], 900)
+                if rc != 0:      # bir kez daha dene: Ahenk'siz bırakmamak için
+                    fix_run(["dpkg", "--configure", "-a"], 600)
+                    rc, o, e = fix_run(["apt-get", "install"] + APT_OPTS + ["ahenk"], 900)
+                purged = rc == 0
+                act("yapıldı" if purged else "başarısız",
+                    "Ahenk purge edilip yeniden kuruldu (yeni uuid4 ile Lider kaydı yapılacak)",
+                    ("Neden: %s — Lider eski mimariyi artık desteklemiyor.\nYedek: %s\n"
+                     "Not: eski ajan kaydı Lider'de sahipsiz kalır." % ("; ".join(why), backup_dir))
+                    if purged else
+                    "AHENK KURULU DEĞİL — yeniden kurulum başarısız: %s\nElle: sudo apt-get "
+                    "install ahenk (yedek: %s)" % (last_line(e or o), backup_dir))
+                restart_needed = restart_needed or purged
+
     # 4) Paketler
     install, reinstall = [], []
     ahenk_missing = not D.get("ahenk_version")
@@ -1991,9 +2045,12 @@ def run_fix(args, R, D):
         reinstall.append("ahenk-eba-cert")
     if D.get("etainfo_failed"):
         reinstall += ["etainfo", "eta-info"]
-    if (D.get("import_error") or (D.get("service_nrestarts") or 0) >= 3) and not ahenk_missing:
+    if purged:
+        install = [p for p in install if p != "ahenk"]
+    if (D.get("import_error") or (D.get("service_nrestarts") or 0) >= 3) and not ahenk_missing \
+            and not purged:
         reinstall.append("ahenk")
-    if install or reinstall:
+    if (install or reinstall) and not apt_updated:
         rc, o, e = fix_run(["apt-get", "update"], 300)
         act("yapıldı" if rc == 0 else "başarısız", "Paket listeleri güncellendi (apt update)",
             "" if rc == 0 else last_line(e or o))
@@ -2025,7 +2082,9 @@ def run_fix(args, R, D):
 
     # 6) Kimlik: sıfırlama gerekçeleri (yalnızca güçlü kanıt)
     reset_why = None
-    if os.path.exists(AHENK_CONF) and D.get("ahenk_version"):
+    if purged:
+        D["conf_db_mismatch"] = False
+    if os.path.exists(AHENK_CONF) and D.get("ahenk_version") and not purged:
         integ = (D.get("db") or {}).get("integrity")
         if D.get("consumer_busy_current"):
             reset_why = ("KLON İMAJ: aynı UUID başka bir tahtada aktif (güncel "
@@ -2143,7 +2202,8 @@ def run_fix(args, R, D):
         _, active, _ = run("systemctl is-active ahenk.service")
         backoff = D.get("backoff") and (D.get("net_basics") or {}).get("broker_tcp_open")
         need_start = active != "active" or restart_needed or bool(backoff)
-        retry = LIDER_RETRY if (reset_why or (lider_5xx and str(D.get("registered")) != "1")) \
+        retry = LIDER_RETRY if (reset_why or purged or
+                                (lider_5xx and str(D.get("registered")) != "1")) \
             else 1
         if need_start:
             why = ("bekleme aşaması atlanıyor (deneme %s/%s, sonraki deneme %s)" % (
@@ -2935,8 +2995,10 @@ def diagnose(args):
         cause = ""
         if pr.get("auth_ok") is False:
             cause = ("Neden: Pulsar sunucusu tahtanın kimliğini REDDEDİYOR (aktif test)%s. "
-                     "Çözüm: Ahenk kimliğini sıfırlayıp yeniden kayıt (--fix bunu yapar)."
-                     % (" — kimlik eski mimariden (LDAP dönemi)" if li.get("legacy") else ""))
+                     "Çözüm: %s (--fix bunu yapar)." % (
+                         " — kimlik eski mimariden (LDAP dönemi)" if li.get("legacy") else "",
+                         "Ahenk'i purge edip yeniden kurmak" if li.get("legacy") else
+                         "Ahenk kimliğini sıfırlayıp yeniden kayıt"))
         elif pr.get("failed_stage"):
             cause = "Neden: %s" % probe_layer_verdict(pr)
         elif li.get("legacy"):
@@ -2957,8 +3019,8 @@ def diagnose(args):
         R.finding(WARN, "Ahenk kimliği eski mimariden (LDAP dönemi)",
                   "Kimlik LDAP'lı dönemde oluşturulmuş (kayıt %s%s%s). Mevcut mimaride Pulsar "
                   "sunucusu bu kimlikleri tanımayabilir; Ahenk yerel kaydı 'var' gördüğü için "
-                  "('already registered') yeniden kayıt olmaz. Aktif test oturumu "
-                  "reddederse --fix kimliği sıfırlayıp yeni kayıt yaptırır." % (
+                  "('already registered') yeniden kayıt olmaz. --fix Ahenk'i purge edip "
+                  "yeniden kurar; tahta yeni uuid4 kimlikle kaydolur." % (
                       li.get("timestamp"), ", LDAP DN dolu" if li.get("ldap_dn") else "",
                       ", UUID sürüm 3" if li.get("uuid_version") == "3" else ""))
 
@@ -3524,13 +3586,23 @@ def main():
     elif not args.no_send:
         # paste düz metin gösterir: renk kodlarını ve sekmeleri temizleyerek gönder
         plain = clean_for_paste(R.render())
-        # 1) Tam raporu paste.rs'e yükle
+        # 1) Tam raporu paste.rs'e yükle (geçici ağ hatasına karşı bir kez daha dene)
         ok, url, perr = upload_paste(plain)
+        if not ok:
+            time.sleep(2)
+            ok, url, perr = upload_paste(plain)
+        if not ok:
+            # Yanıt URL değilse (ör. ağ filtresinin sayfası) link olarak kullanma
+            perr = perr or "geçersiz yanıt: %s" % (url or "")[:80]
+            url = None
         # 2) Özet + linki ntfy.sh konusuna it
         topic = os.environ.get("AHENK_DEBUG_NTFY") or NTFY_TOPIC_DEFAULT
         summary, n_fail, n_warn = build_send_summary(D, R.findings)
         if url:
             summary += "\n\nTam rapor: %s" % url
+        else:
+            # Operatör rapora neden ulaşamadığını bildirimden görebilsin
+            summary += "\n\nTam rapor yüklenemedi (paste.rs): %s" % perr
         title = "ahenk%s: %s" % (" --fix" if args.fix else "",
                                  D.get("hostname") or platform.node())
         prio = "urgent" if n_fail else ("high" if n_warn else "default")
@@ -3539,7 +3611,7 @@ def main():
         disp_topic = topic if topic.startswith("http") else "%s/%s" % (NTFY_BASE, topic)
         D["send"] = {"paste_url": url, "ntfy_topic": disp_topic,
                      "paste_ok": ok, "ntfy_ok": nok,
-                     "error": (nerr or perr) if not nok else None}
+                     "error": nerr or perr}
         # Gönderim sonucu ekrana basılmaz; başarısızlık yalnızca JSON'daki
         # send.error alanında ve operatöre giden bildirimin gelmemesiyle anlaşılır.
 

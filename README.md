@@ -128,6 +128,7 @@ istisnasıdır.
 | 1 | Kimlik arayüzü açık ama IP yok | DHCP yenileme (`nmcli device reapply`/yeniden bağlan; yoksa `dhclient`) |
 | 2 | Disk ≥%90 | `apt-get clean`, `journalctl --vacuum-size=50M`, eski Ahenk günlükleri (`ahenk.log.*.gz`) |
 | 3 | Yarım kalmış paket işlemi | `dpkg --configure -a` |
+| 3b | **Eski mimari kimlik** (UUID sürüm 3 ya da LDAP DN dolu) **ya da Ahenk < 2.0.9** — Lider bu mimariyi artık desteklemiyor, bağlantıyı atıyor | `apt-get update` → yedek → `systemctl stop ahenk` → `apt-get purge ahenk` → `ahenk.db` silinir → `apt-get install ahenk`; ardından yeni uuid4 ile Lider kaydı 3 denemeye kadar beklenir. Eski ajan kaydı Lider'de sahipsiz kalır. Bu yapıldığında sonraki Ahenk kurma ve kimlik sıfırlama adımları atlanır |
 | 4 | Ahenk kurulu değil (ETA kaydı varsa) / eski; eta-register yok/eski; sertifika dosyası yok; etainfo çöküyor; crash-loop/ImportError | `apt-get update` + `install` / `install --reinstall` (`ahenk`, `eta-register`, `ahenk-eba-cert`, `etainfo eta-info`) |
 | 5 | Saat NTP ile senkron değil | `timedatectl set-ntp true` + timesyncd yeniden başlatma |
 | 6 | **Klon imaj** (güncel ConsumerBusy), **veritabanı bozuk** ya da **sunucu kimliği tanımıyor** (aktif test oturumu **iki kez** reddetti) | Yedek → servisi durdur → **Ahenk kimliğini sıfırla** (DB silinir; `ahenk.conf` uid/parola/host ve `messaging.conf` Pulsar alanları boşaltılır) → yeni UUID ile yeni Lider kaydı |
@@ -320,9 +321,9 @@ olur. Lider kaydı başarısız olursa Ahenk kendini durdurur.
 sürüm 3 — eski Ahenk'in MAC'ten türettiği kimlik; bugünkü Ahenk sürüm 4 üretir) 2.
 bölümde "Kimlik dönemi: ESKİ MİMARİ" yazılır. Böyle bir tahta Pulsar'a bağlanamıyorsa
 neden büyük olasılıkla sunucunun bu kimliği artık tanımamasıdır: Ahenk yerel kaydı
-"var" gördüğü için yeniden kayıt olmaz. Aktif test oturumu reddederse rapor bunu
-"Ahenk çalışıyor ama Pulsar oturumu kurulamıyor — Neden: sunucu kimliği reddediyor
-(eski mimari)" diye bildirir; `--fix` reddi ikinci kez doğrulayıp kimliği sıfırlar.
+"var" gördüğü için yeniden kayıt olmaz. Lider eski mimariyi artık desteklemediği
+için `--fix` böyle bir tahtada (ya da Ahenk 2.0.9'dan eskiyse) bağlantı durumuna
+bakmadan Ahenk'i **purge edip yeniden kurar**; tahta yeni uuid4 kimlikle kaydolur.
 
 Mevcut mimari LDAP kullanmadığından LDAP'a dayalı kontroller yapılmaz: `dn`
 (LDAP dizin nesnesi) yalnızca bilgi olarak gösterilir, boş olması bulgu üretmez.
