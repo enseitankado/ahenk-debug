@@ -317,9 +317,12 @@ ETA kaydının başarılı olması (ör. derslik adının değişmesi) Lider kay
 etmez: ETA Kayıt kaydettikten sonra Ahenk'i başlatır, Ahenk de Lider'e ayrıca kayıt
 olur. Lider kaydı başarısız olursa Ahenk kendini durdurur.
 
-**Eski mimari kimliği:** Kayıt LDAP'lı dönemde yapılmışsa (LDAP DN dolu ya da UUID
-sürüm 3 — eski Ahenk'in MAC'ten türettiği kimlik; bugünkü Ahenk sürüm 4 üretir) 2.
-bölümde "Kimlik dönemi: ESKİ MİMARİ" yazılır. Böyle bir tahta Pulsar'a bağlanamıyorsa
+**Eski mimari kimliği:** Esas kontrol noktası **`ahenk.conf` → `[CONNECTION] uid`**:
+Ahenk Pulsar'a bu kimlikle bağlanır ve "kayıtlı mıyım" kararını buradan verir. Bu uid
+UUID sürüm 3 ise (eski Ahenk'in MAC'ten türettiği kimlik; bugünkü Ahenk sürüm 4 üretir)
+kimlik eski mimaridir. Ek olarak `ahenk.db`'deki `jid` sürüm 3 ise ya da LDAP DN doluysa
+(DN yalnızca DB'de tutulur) da eski mimari sayılır; conf/DB uyuşmazlığı bu tespiti
+engellemez. Rapor "Kimlik dönemi: ESKİ MİMARİ" satırında hangi kaynakta görüldüğünü yazar. Böyle bir tahta Pulsar'a bağlanamıyorsa
 neden büyük olasılıkla sunucunun bu kimliği artık tanımamasıdır: Ahenk yerel kaydı
 "var" gördüğü için yeniden kayıt olmaz. Lider eski mimariyi artık desteklemediği
 için `--fix` böyle bir tahtada (ya da Ahenk 2.0.9'dan eskiyse) bağlantı durumuna

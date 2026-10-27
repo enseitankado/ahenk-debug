@@ -1985,10 +1985,7 @@ def run_fix(args, R, D):
     if ver and (li.get("legacy") or old_ver):
         why = []
         if li.get("legacy"):
-            why.append("eski mimari kimlik (%s)" % ", ".join(
-                x for x in ("UUID sürüm %s" % li.get("uuid_version")
-                            if li.get("uuid_version") == "3" else "",
-                            "LDAP DN dolu" if li.get("ldap_dn") else "") if x))
+            why.append("eski mimari kimlik (%s)" % ", ".join(li.get("sources") or []))
         if old_ver:
             why.append("Ahenk %s < 2.0.9" % ver)
         rc, o, e = fix_run(["apt-get", "update"], 300)
@@ -2651,19 +2648,37 @@ def diagnose(args):
                           else "Neden günlükte görünmüyor; kayıt ucuna erişimi (6. bölüm) "
                                "inceleyin."))
         R.line("Kayıt zamanı", db_reg["timestamp"], INFO)
-        mv = re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-([0-9a-f])", (db_reg["jid"] or "").lower())
-        uuid_ver = mv.group(1) if mv else None
-        legacy = registered_flag and (bool(dn) or uuid_ver == "3")
-        D["legacy_identity"] = {"legacy": legacy, "uuid_version": uuid_ver,
-                                "ldap_dn": bool(dn), "timestamp": db_reg["timestamp"]}
-        if legacy:
-            R.line("Kimlik dönemi", "ESKİ MİMARİ (LDAP dönemi): %s" % ", ".join(
-                x for x in ("LDAP DN dolu" if dn else "",
-                            "UUID sürüm 3 (MAC'ten türetilmiş)" if uuid_ver == "3" else "",
-                            "kayıt %s" % db_reg["timestamp"]) if x), INFO)
     else:
         R.line("DB", "okunamadı: %s" % (db["error"] or "?"),
                FAIL if root else WARN)
+
+    # Eski mimari kimlik tespiti. Esas kontrol noktası ahenk.conf [CONNECTION] uid:
+    # Ahenk Pulsar'a bu kimlikle bağlanır ve "kayıtlı mıyım" kararını buradan verir.
+    # Ek olarak DB'deki jid sürümü ve LDAP DN (yalnızca DB'de tutulur) değerlendirilir.
+    # conf/DB uyuşmazlığı bu tespiti engellemez.
+    def _uuid_ver(u):
+        mv = re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-([0-9a-f])", (u or "").strip().lower())
+        return mv.group(1) if mv else None
+    conf_ver = _uuid_ver(conf_uid)
+    db_ver = _uuid_ver(db_reg["jid"]) if db_reg else None
+    db_dn = bool(((db_reg or {}).get("dn") or "").strip()) and \
+        str((db_reg or {}).get("registered")) == "1"
+    legacy_src = []
+    if conf_ver == "3":
+        legacy_src.append("ahenk.conf uid UUID sürüm 3")
+    if db_ver == "3" and str((db_reg or {}).get("registered")) == "1":
+        legacy_src.append("DB jid UUID sürüm 3")
+    if db_dn:
+        legacy_src.append("LDAP DN dolu")
+    D["legacy_identity"] = {"legacy": bool(legacy_src), "sources": legacy_src,
+                            "uuid_version": conf_ver or db_ver, "conf_uuid_version": conf_ver,
+                            "db_uuid_version": db_ver, "ldap_dn": db_dn,
+                            "timestamp": (db_reg or {}).get("timestamp")}
+    if legacy_src:
+        R.line("Kimlik dönemi", "ESKİ MİMARİ (LDAP dönemi): %s%s" % (
+            ", ".join(legacy_src),
+            ", kayıt %s" % db_reg["timestamp"] if db_reg and db_reg.get("timestamp") else ""),
+            INFO)
 
     # conf <-> db tutarlılığı
     if root and conf_uid is not None and db_reg and not conf_uid.strip() \
@@ -3021,8 +3036,8 @@ def diagnose(args):
                   "sunucusu bu kimlikleri tanımayabilir; Ahenk yerel kaydı 'var' gördüğü için "
                   "('already registered') yeniden kayıt olmaz. --fix Ahenk'i purge edip "
                   "yeniden kurar; tahta yeni uuid4 kimlikle kaydolur." % (
-                      li.get("timestamp"), ", LDAP DN dolu" if li.get("ldap_dn") else "",
-                      ", UUID sürüm 3" if li.get("uuid_version") == "3" else ""))
+                      li.get("timestamp"), "; " if li.get("sources") else "",
+                      ", ".join(li.get("sources") or [])))
 
     # ---------------- 4) Bağlantı / Temel TCP / DNS ----------------
     R.section("6) Bağlantı, Temel TCP ve DNS")
