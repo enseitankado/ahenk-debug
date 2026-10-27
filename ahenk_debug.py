@@ -3475,25 +3475,7 @@ def diagnose(args):
                    (t["name"], vp, t["driver"], t["handlers"]), INFO)
     else:
         R.line("Dokunmatik", "tespit edilemedi (USB/HID girdi cihazı yok)", WARN)
-        sch = D.get("school") or {}
-        mac = D.get("live_mac") or "?"
-        model = "%s %s" % (board_vendor or "?", board_name or "?")
-        okul = ("%s (kod %s)" % (sch.get("school"), sch.get("code"))
-                if sch.get("school") else "ETA'da kayıtlı değil")
-        R.finding(WARN, "Dokunmatik çerçeve USB'de görünmüyor",
-                  "Dokunmatik donanımı USB arabiriminde hiç görünmüyor; çerçeve arızalı ya da "
-                  "bağlı değil (sürücü sorunu değil). Tahta USB fareyle kullanılabilir, ancak "
-                  "ETA Kayıt dokunmatik denetimine takıldığı için kayıt ekranına geçemez.\n"
-                  "Tahta Lider'de yönetilecekse ETA ekibinden bu tahta için kayıt desteği "
-                  "isteyin. E-posta şablonu:\n"
-                  "  Kime  : eta@pardus.org.tr\n"
-                  "  Konu  : Dokunmatiği arızalı tahta - ETA kayıt desteği\n"
-                  "  İçerik: Okul: %s · MAC: %s · Model: %s · Durum: dokunmatik çerçeve "
-                  "arızalı ve temin edilemiyor (eski model), tahta USB fareyle kullanılıyor; "
-                  "ETA Kayıt dokunmatik denetimine takıldığı için tahtayı kaydedemiyoruz. "
-                  "Bu tahta için kayıt desteği rica ederiz.\n"
-                  "Not: Tahta ETA'da kaydedildikten sonra 'ahenk-debug --fix' Ahenk'i kurup "
-                  "Lider'e bağlar." % (okul, mac, model))
+        R.finding(WARN, "Dokunmatik çerçeve USB'de görünmüyor")
 
     # ---------------- Olumlu özet ----------------
     if not any(f[0] == FAIL for f in R.findings):
