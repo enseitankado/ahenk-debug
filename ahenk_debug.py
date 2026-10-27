@@ -871,7 +871,11 @@ def scan_session_errors(srv_start, max_samples=4, cert_path_empty=False):
         dt = parse_log_ts(ln)
         if srv_start and dt and dt < srv_start:
             continue
-        if cert_path_empty and "Error during certificate download" in ln:
+        # Kayıt öncesi beklenen sertifika hatası: yol henüz boşken open('') çağrısı.
+        # Karar şu anki ayara değil hatanın imzasına dayanır: kayıt aynı oturumda
+        # başarılı olunca yol messaging.conf'a yazılır ve artık "boş" görünmez.
+        if "Error during certificate download" in ln and (
+                "No such file or directory: ''" in ln or cert_path_empty):
             out["expected"] += 1
             continue
         if PULSAR_FAIL_RE.search(ln):     # Pulsar bağlantı hataları ayrı raporlanıyor
@@ -2018,7 +2022,8 @@ def run_fix(args, R, D):
                     "Eski mimari sistemden kaldırılıyor (yeni uuid4 ile Lider kaydı yapılacak)",
                     ("Neden: %s — Lider eski mimariyi artık desteklemiyor.\nAhenk paketi "
                      "ayarlarıyla kaldırılıp yeniden kuruldu.\nYedek: %s\n"
-                     "Not: eski ajan kaydı Lider'de sahipsiz kalır." % ("; ".join(why), backup_dir))
+                     "Not: Lider tahtayı tanırsa mevcut ajan kaydını günceller (ALREADY_EXISTS); "
+                     "tanımazsa yeni ajan oluşur, eskisi sahipsiz kalır." % ("; ".join(why), backup_dir))
                     if purged else
                     "AHENK KURULU DEĞİL — yeniden kurulum başarısız: %s\nElle: sudo apt-get "
                     "install ahenk (yedek: %s)" % (last_line(e or o), backup_dir))
@@ -2136,8 +2141,9 @@ def run_fix(args, R, D):
                     "pulsar_host": "", "pulsar_port": "", "pulsar_use_tls": "",
                     "tls_trust_certs_file_path": ""}})
             act("yapıldı", "Ahenk kimliği sıfırlandı (yeni UUID ile yeni Lider kaydı "
-                "yapılacak)", "Neden: %s\nYedek: %s\nNot: eski ajan kaydı Lider'de sahipsiz "
-                "kalır." % (reset_why, backup_dir))
+                "yapılacak)", "Neden: %s\nYedek: %s\nNot: Lider tahtayı tanırsa mevcut ajan "
+                "kaydını günceller (ALREADY_EXISTS); tanımazsa yeni ajan oluşur, eskisi "
+                "sahipsiz kalır." % (reset_why, backup_dir))
             restart_needed = True
         except Exception as e:
             act("başarısız", "Ahenk kimliği sıfırlanamadı", "%s (yedek: %s)" % (e, backup_dir))
@@ -2573,10 +2579,12 @@ def diagnose(args):
         if sess_err["expected"]:
             R.line("Sertifika indirme hatası", "%d kez — kayıt öncesi BEKLENEN hata" %
                    sess_err["expected"], INFO)
-            R.note("messaging.conf'taki sertifika yolu (tls_trust_certs_file_path) kayıt "
-                   "başarılı olunca Lider'in yanıtıyla doldurulur. Yol boşken Ahenk "
-                   "indirdiği sertifikayı open('') ile yazmaya çalışır ve FileNotFoundError "
-                   "alır. Kaydın tamamlanmamasının sonucudur, nedeni değildir.")
+            R.note("Ahenk açılışta sertifikayı kayıttan ÖNCE denetler. messaging.conf'taki "
+                   "sertifika yolu (tls_trust_certs_file_path) kayıt başarılı olunca Lider'in "
+                   "yanıtıyla doldurulur; o ana kadar boştur ve Ahenk indirdiği sertifikayı "
+                   "open('') ile yazmaya çalışıp FileNotFoundError alır. Yeni kurulumda / "
+                   "kimlik sıfırlamada ilk açılışta bir kez görülür; kayıt yolu yazdıktan "
+                   "sonraki açılışlarda tekrarlanmaz. Zararsızdır.")
         if sess_err["count"] == 0:
             R.line("Mevcut oturum hataları", "yok (ConsumerBusy hariç)", OK)
         else:
